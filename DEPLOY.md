@@ -1,5 +1,10 @@
 # Deploying Clientword to AWS
 
+> **Warning (checked 29 Oct 2026):** AWS has closed App Runner to new customers. Existing customers can keep using it, but a new AWS
+> account may not be able to create an App Runner service, and AWS recommends **Amazon ECS Express Mode** instead.
+> `infra/template.yaml` currently targets App Runner, so treat it as a reference until it is changed to ECS Express Mode
+> or the app is moved to Next.js on Amplify. See https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html
+
 Runs as one container on **AWS App Runner**, with **DynamoDB** (data), **S3** (uploaded files) and **SES** (email).
 `infra/template.yaml` creates all of it. Costs a few pounds a month at small scale (check the AWS pricing calculator).
 
