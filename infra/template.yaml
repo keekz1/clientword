@@ -1,21 +1,24 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Clientword - DynamoDB table, S3 bucket, IAM roles and an App Runner service
+Description: Clientword data layer for AWS Amplify - DynamoDB table, S3 bucket (with browser-upload CORS), the role the Amplify app runs as, and an optional daily reminders schedule
 
 Parameters:
-  ImageUri:
-    Type: String
-    Description: ECR image to run, e.g. 123456789012.dkr.ecr.eu-west-2.amazonaws.com/clientword:latest
   AppUrl:
     Type: String
-    Description: Public https address users will visit (custom domain or the App Runner URL), no trailing slash
-  MailFrom:
-    Type: String
-    Description: Verified SES sender, e.g. "Clientword <hello@yourdomain.co.uk>"
+    Description: Public https address people will visit (your domain, or the Amplify one like https://main.d1234.amplifyapp.com). No trailing slash. Update the stack once you know it.
+    Default: "https://example.com"
   CronSecret:
     Type: String
     NoEcho: true
     MinLength: 24
-    Description: Long random string that protects the reminders endpoint
+    Description: Long random string that protects the reminders endpoint (use the same value as the CRON_SECRET variable in Amplify)
+  EnableReminders:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: Turn on after the app is live and AppUrl is correct. Sends the daily "please finish your onboarding" job.
+
+Conditions:
+  Reminders: !Equals [!Ref EnableReminders, "true"]
 
 Resources:
   Table:
@@ -30,7 +33,7 @@ Resources:
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
-      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }   # sessions, reset links and rate-limit counters expire by themselves
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
       SSESpecification: { SSEEnabled: true }
 
@@ -47,29 +50,23 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      # Clients' browsers upload straight to the bucket, so it must allow PUT from your site (and only your site)
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: [!Ref AppUrl]
+            AllowedMethods: [PUT]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
 
-  # Lets App Runner pull the image from your private ECR repository
-  AccessRole:
+  # The identity Amplify's server-side code runs as: only this table, this bucket, and sending email
+  AppRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: { Service: build.apprunner.amazonaws.com }
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
-
-  # What the running app is allowed to do: only its own table, bucket and sending email
-  InstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal: { Service: tasks.apprunner.amazonaws.com }
+            Principal: { Service: amplify.amazonaws.com }
             Action: sts:AssumeRole
       Policies:
         - PolicyName: clientword-app
@@ -77,7 +74,7 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:Query, dynamodb:Scan]
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query, dynamodb:Scan]
                 Resource: !GetAtt Table.Arn
               - Effect: Allow
                 Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
@@ -86,40 +83,52 @@ Resources:
                 Action: ses:SendEmail
                 Resource: "*"
 
-  Service:
-    Type: AWS::AppRunner::Service
+  # ---- daily reminders: EventBridge calls POST /api/cron/reminders with the secret header ----
+  CronConnection:
+    Type: AWS::Events::Connection
+    Condition: Reminders
     Properties:
-      ServiceName: clientword
-      SourceConfiguration:
-        AuthenticationConfiguration: { AccessRoleArn: !GetAtt AccessRole.Arn }
-        AutoDeploymentsEnabled: false
-        ImageRepository:
-          ImageIdentifier: !Ref ImageUri
-          ImageRepositoryType: ECR
-          ImageConfiguration:
-            Port: "8080"
-            RuntimeEnvironmentVariables:
-              - { Name: NODE_ENV, Value: production }
-              - { Name: STORE, Value: dynamo }
-              - { Name: TABLE_NAME, Value: !Ref Table }
-              - { Name: BUCKET, Value: !Ref Bucket }
-              - { Name: MAIL, Value: ses }
-              - { Name: MAIL_FROM, Value: !Ref MailFrom }
-              - { Name: APP_URL, Value: !Ref AppUrl }
-              - { Name: TRUST_PROXY, Value: "1" }
-              - { Name: CRON_SECRET, Value: !Ref CronSecret }
-      InstanceConfiguration:
-        Cpu: 0.25 vCPU
-        Memory: 0.5 GB
-        InstanceRoleArn: !GetAtt InstanceRole.Arn
-      HealthCheckConfiguration:
-        Protocol: HTTP
-        Path: /healthz
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters: { ApiKeyName: x-cron-secret, ApiKeyValue: !Ref CronSecret }
+  CronDestination:
+    Type: AWS::Events::ApiDestination
+    Condition: Reminders
+    Properties:
+      ConnectionArn: !GetAtt CronConnection.Arn
+      HttpMethod: POST
+      InvocationEndpoint: !Sub "${AppUrl}/api/cron/reminders"
+      InvocationRateLimitPerSecond: 1
+  CronInvokeRole:
+    Type: AWS::IAM::Role
+    Condition: Reminders
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: events.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: invoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: events:InvokeApiDestination, Resource: !GetAtt CronDestination.Arn }
+  DailyReminders:
+    Type: AWS::Events::Rule
+    Condition: Reminders
+    Properties:
+      ScheduleExpression: cron(15 9 * * ? *)   # 09:15 UTC every day
+      State: ENABLED
+      Targets:
+        - Id: reminders
+          Arn: !GetAtt CronDestination.Arn
+          RoleArn: !GetAtt CronInvokeRole.Arn
 
 Outputs:
-  ServiceUrl:
-    Value: !GetAtt Service.ServiceUrl
   TableName:
     Value: !Ref Table
   BucketName:
     Value: !Ref Bucket
+  AppRoleArn:
+    Description: Paste this as the "Compute role" in Amplify (App settings > IAM roles)
+    Value: !GetAtt AppRole.Arn

@@ -1,62 +1,75 @@
-# Deploying Clientword to AWS
+# Deploying Clientword on AWS Amplify
 
-> **Warning (checked 29 Oct 2026):** AWS has closed App Runner to new customers. Existing customers can keep using it, but a new AWS
-> account may not be able to create an App Runner service, and AWS recommends **Amazon ECS Express Mode** instead.
-> `infra/template.yaml` currently targets App Runner, so treat it as a reference until it is changed to ECS Express Mode
-> or the app is moved to Next.js on Amplify. See https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html
+Everything here is serverless, so you pay close to nothing until you have real users.
+Do these in order. Use one region for everything (e.g. `eu-west-2`, London).
 
-Runs as one container on **AWS App Runner**, with **DynamoDB** (data), **S3** (uploaded files) and **SES** (email).
-`infra/template.yaml` creates all of it. Costs a few pounds a month at small scale (check the AWS pricing calculator).
+> **Status:** the app logic, DynamoDB layout, presigned uploads and rate limiting are covered by `node test.mjs`
+> (against an in-memory table and a fake bucket). The Next.js wrapper, `amplify.yml`, the CloudFormation template
+> and the real AWS calls have **not** been run end to end yet. Expect to fix small things on your first deploy,
+> and do a test run (steps 6 and 7) before inviting anyone real.
 
-> Status: the app logic is tested (136 checks, including the DynamoDB logic on an in-memory table).
-> The thin AWS SDK wrappers (`dynamo-adapter.mjs`, `files.mjs`, `mail.mjs`) and `infra/template.yaml`
-> have **not** been run against real AWS yet. Do a first deployment in a throwaway stack and click through it.
+## 1. Check it runs on your machine
+    npm install
+    npm run dev        # open http://localhost:3000, sign up, add a client, open its link
+    node test.mjs
+If `npm run dev` fails, fix that first: send me the error.
+Commit the `package-lock.json` that `npm install` creates.
 
-## 1. One-off setup
-1. **Region:** use `eu-west-2` (London) unless you have a reason not to.
-2. **SES (email):** SES > Verified identities > add your domain (or an address). Add the DNS records it gives you.
-   New accounts start in the *sandbox* (can only email verified addresses): request production access.
-3. **ECR (image store):** `aws ecr create-repository --repository-name clientword`
+## 2. Create the data layer (DynamoDB, S3, IAM role)
+AWS Console > CloudFormation > Create stack > upload `infra/template.yaml`.
+- `AppUrl`: your final address if you know it (e.g. `https://clientword.co.uk`), otherwise leave the placeholder and update the stack in step 5.
+- `CronSecret`: a long random string (24+ characters). Save it.
+- `EnableReminders`: leave `false` for now.
 
-## 2. Build and push the image
-```
-docker build -t clientword .
-aws ecr get-login-password | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
-docker tag clientword <account>.dkr.ecr.<region>.amazonaws.com/clientword:latest
-docker push <account>.dkr.ecr.<region>.amazonaws.com/clientword:latest
-```
+When it finishes, open the **Outputs** tab. You need `TableName`, `BucketName` and `AppRoleArn`.
 
-## 3. Create the stack
-```
-aws cloudformation deploy --template-file infra/template.yaml --stack-name clientword \
-  --capabilities CAPABILITY_IAM \
-  --parameter-overrides ImageUri=<account>.dkr.ecr.<region>.amazonaws.com/clientword:latest \
-    AppUrl=https://app.yourdomain.co.uk MailFrom="Clientword <hello@yourdomain.co.uk>" CronSecret=<long random string>
-```
-`AppUrl` is the public https address used in emails. The app refuses to start in production without it.
-If you don't have a domain yet, deploy once with a placeholder, read `ServiceUrl` from the stack outputs,
-then run the command again with `AppUrl=https://<that url>`.
+## 3. Verify email sending (SES)
+SES > Verified identities > create one for your domain (or, to test, your own address) and add the DNS records.
+New accounts start in the SES sandbox (can only email verified addresses): request production access
+(SES > Account dashboard) before real clients use it.
 
-## 4. Custom domain
-App Runner console > your service > Custom domains > add `app.yourdomain.co.uk` and create the DNS records it shows.
+## 4. Create the Amplify app
+Amplify > Create new app > GitHub > `keekz1/clientword`, branch `main`. It detects Next.js and `amplify.yml`.
+Before the first build, add **Environment variables**:
 
-## 5. Daily reminders
-Call this once a day from any scheduler that can send an HTTPS POST (e.g. EventBridge with an API destination, or a cron service):
-```
-POST https://app.yourdomain.co.uk/api/cron/reminders
-x-cron-secret: <your CronSecret>
-```
-It emails clients who were invited but haven't finished, every 3 days, up to 3 times.
+| Name | Value |
+|---|---|
+| `STORE` | `dynamo` |
+| `TABLE_NAME` | from step 2 |
+| `BUCKET` | from step 2 |
+| `APP_REGION` | e.g. `eu-west-2` |
+| `APP_URL` | your public https address, no trailing slash |
+| `MAIL` | `ses` |
+| `MAIL_FROM` | e.g. `Clientword <hello@yourdomain.co.uk>` (must be on the SES identity) |
+| `TRUST_PROXY` | `1` |
+| `CRON_SECRET` | the same secret as step 2 |
 
-## 6. Updating
-Push a new image, then in App Runner choose **Deploy** (auto-deploy is off on purpose).
+Then App settings > **IAM roles** > Compute role > choose the role from `AppRoleArn`. Without this the app
+cannot reach DynamoDB, S3 or SES. Deploy.
 
-## Before you take real customers
-- [ ] Privacy policy and terms of service pages (and a cookie notice if you add analytics)
-- [ ] Have a solicitor review the e-signature wording and your contract template
-- [ ] Email verification for new freelancer accounts (not built yet)
-- [ ] Account deletion and data export for freelancers (GDPR; not built yet)
-- [ ] SES bounce and complaint handling
-- [ ] A billing alarm in AWS Budgets
-- [ ] Rate limits are per instance: keep App Runner at 1 instance until you move them to DynamoDB/Redis
-- [ ] Test restoring DynamoDB from point-in-time backup once
+## 5. Address and final URL
+If you use the Amplify address (`https://main.dxxxx.amplifyapp.com`) or add a custom domain (Amplify > Domain management),
+put the final address in `APP_URL` (redeploy) **and** update the CloudFormation stack's `AppUrl` parameter. That parameter
+controls which website may upload files to your bucket, so uploads fail until it matches.
+
+## 6. Test it properly
+- Sign up, confirm the email link arrives, log in.
+- Add a client and open the client link in a private window.
+- Upload a file (this goes straight from the browser to S3) and download it from the dashboard.
+- Sign the contract, send a message each way, check the emails arrive.
+- If something fails: Amplify > your app > Hosting > Monitoring > Logs (the server's log lines are JSON).
+
+## 7. Turn on reminders
+Update the stack with `EnableReminders = true` (and the right `AppUrl`). EventBridge then calls
+`/api/cron/reminders` daily with your secret.
+
+## Cost
+Amplify hosting, DynamoDB on-demand, S3 and SES are all pay-per-use. At small scale expect pennies a month
+(Amplify has a free tier for builds and hosting). The cost to watch is email volume and stored files.
+
+## Things to know
+- Uploads are capped at 25 MB each because freelancers should share big deliverables as links (Drive, Dropbox, WeTransfer).
+  The cap is `MAX_UPLOAD` in `core.mjs`; raising it is safe now that files go straight to S3.
+- A client who starts an upload and never finishes leaves an unused object in the bucket. Harmless at this scale; add an S3 lifecycle rule later if it ever matters.
+- Sessions last 14 days and live in DynamoDB, so deploys don't log anyone out.
+- Not yet done: privacy policy and terms pages, solicitor review of the e-sign wording, Stripe payments.

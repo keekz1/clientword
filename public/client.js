@@ -130,12 +130,24 @@ function filesStep(s, n) {
     ondrop: (e) => { e.preventDefault(); drop.classList.remove("over"); upload([...e.dataTransfer.files]); } },
     "Drop files here or click to choose", el("div", { class: "small" }, "Up to 25 MB each"));
 
+  // On AWS the browser sends the file straight to S3 (so big files never pass through the app);
+  // without S3 (local development) it posts the bytes to the server instead.
+  async function sendFile(file) {
+    const t = await api(base + "/upload-url", { method: "POST", body: { name: file.name, size: file.size } });
+    if (t.mode !== "direct") return api(base + "/upload", { method: "POST", body: file, headers: { "x-filename": encodeURIComponent(file.name) } });
+    let put;
+    try { put = await fetch(t.url, { method: "PUT", body: file, headers: t.headers || {} }); }
+    catch { throw new Error("The upload didn't complete. Check your connection and try again."); }
+    if (!put.ok) throw new Error("The upload didn't complete. Please try again.");
+    return api(base + "/upload-done", { method: "POST", body: { stored: t.stored, name: file.name } });
+  }
+
   async function upload(files) {
     err.textContent = "";
     for (const file of files) {
       if (file.size > 25 * 1024 * 1024) { err.textContent = `${file.name} is over 25 MB.`; continue; }
       drop.firstChild.textContent = `Uploading ${file.name}…`;
-      try { await api(base + "/upload", { method: "POST", body: file, headers: { "x-filename": encodeURIComponent(file.name) } }); }
+      try { await sendFile(file); }
       catch (x) { err.textContent = `${file.name}: ${x.message}`; }
     }
     await load();

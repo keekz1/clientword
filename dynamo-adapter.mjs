@@ -37,6 +37,12 @@ export async function createDynamoTable({ tableName, region }) {
       const r = await doc.send(new lib.DeleteCommand({ TableName: T, Key: { pk, sk }, ...(returnOld ? { ReturnValues: "ALL_OLD" } : {}) }));
       return r.Attributes;
     },
+    // Atomic counter used for rate limiting; the row expires by itself (TTL) at `ttl` (epoch seconds)
+    async incr(pk, sk, ttl) {
+      const r = await doc.send(new lib.UpdateCommand({ TableName: T, Key: { pk, sk }, UpdateExpression: "ADD #n :one SET #t = :t",
+        ExpressionAttributeNames: { "#n": "n", "#t": "ttl" }, ExpressionAttributeValues: { ":one": 1, ":t": ttl }, ReturnValues: "UPDATED_NEW" }));
+      return r.Attributes.n;
+    },
     async scan(skPrefix) {
       return all({ Ctor: lib.ScanCommand, input: { TableName: T, FilterExpression: "begins_with(sk, :s)", ExpressionAttributeValues: { ":s": skPrefix } } });
     },
@@ -57,6 +63,10 @@ export function createMemoryTable() {
     async query(pk, skPrefix) { return sorted([...rows.values()].filter((r) => r.pk === pk && r.sk.startsWith(skPrefix))).map((r) => structuredClone(r)); },
     async del(pk, sk, { returnOld = false } = {}) {
       const old = rows.get(k(pk, sk)); rows.delete(k(pk, sk)); return returnOld ? structuredClone(old) : undefined;
+    },
+    async incr(pk, sk, ttl) {
+      const cur = rows.get(k(pk, sk)) || { pk, sk, n: 0 };
+      cur.n += 1; cur.ttl = ttl; rows.set(k(pk, sk), cur); return cur.n;
     },
     async scan(skPrefix) { return [...rows.values()].filter((r) => r.sk.startsWith(skPrefix)).map((r) => structuredClone(r)); },
     _size: () => rows.size,

@@ -11,6 +11,8 @@ import { createLocalStore } from "./store-local.mjs";
 import { createDynamoStore } from "./store-dynamo.mjs";
 import { createMemoryTable } from "./dynamo-adapter.mjs";
 import { createLocalFiles } from "./files.mjs";
+import { createHandler } from "./core.mjs";
+import { createMemoryLimiter, createTableLimiter } from "./limiter.mjs";
 import { createMailer } from "./mail.mjs";
 
 process.env.QUIET = "1";
@@ -20,9 +22,9 @@ async function suite(name, make) {
   console.log(`\n${name}`);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cw-"));
   const config = loadConfig({ PORTAL_DATA: dir, CRON_SECRET: "test-cron-secret-0123456789abcdef" });
-  const { store, files, table } = make(dir);
+  const { store, files, table, limiter } = make(dir);
   const mailer = createMailer(config);
-  const server = createApp({ config, store, files, mailer });
+  const server = createApp({ config, store, files, mailer, limiter });
   await new Promise((r) => server.listen(0, r));
   const base = "http://localhost:" + server.address().port;
 
@@ -260,8 +262,79 @@ async function suite(name, make) {
   server.close();
 }
 
-await suite("Local JSON store", (dir) => ({ store: createLocalStore(dir), files: createLocalFiles(dir) }));
-await suite("DynamoDB store logic (in-memory table)", (dir) => { const table = createMemoryTable(); return { table, store: createDynamoStore(table), files: createLocalFiles(dir) }; });
+await suite("Local JSON store", (dir) => ({ store: createLocalStore(dir), files: createLocalFiles(dir), limiter: createMemoryLimiter() }));
+await suite("DynamoDB store logic (in-memory table)", (dir) => { const table = createMemoryTable(); return { table, store: createDynamoStore(table), files: createLocalFiles(dir), limiter: createTableLimiter(table) }; });
+
+// ---- the path used on Amplify: web-standard handler, direct-to-S3 uploads, DynamoDB-backed limits ----
+console.log("\nServerless path (web handler, fake S3, DynamoDB limiter)");
+{
+  const ok = (msg) => console.log(`  ✓ ${++total}. ${msg}`);
+  const table = createMemoryTable();
+  const objects = new Map(); // fake bucket
+  const s3 = {
+    async put(k, b) { objects.set(k, b.length); }, async get() { return null; }, async del(k) { objects.delete(k); },
+    async size(k) { return objects.get(k) || 0; },
+    async presignPut(k, size) { return { url: `https://bucket.s3.eu-west-2.amazonaws.com/${k}?sig=${size}`, headers: {} }; },
+    async presignGet(k, name) { return `https://bucket.s3.eu-west-2.amazonaws.com/${k}?dl=${name}`; },
+  };
+  const config = loadConfig({ PORTAL_DATA: os.tmpdir(), TRUST_PROXY: "1", APP_URL: "https://clientword.example", CRON_SECRET: "x".repeat(30) });
+  const mailer = createMailer(config);
+  const handle = createHandler({ config, store: createDynamoStore(table), files: s3, mailer, limiter: createTableLimiter(table) });
+  let cookie = "";
+  const call = async (method, p, body, headers = {}) => {
+    const r = await handle(new Request("https://clientword.example" + p, {
+      method, headers: { ...(body !== undefined ? { "content-type": "application/json" } : {}), ...(cookie ? { cookie } : {}), ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }));
+    const sc = r.headers.get("set-cookie"); if (sc) cookie = sc.split(";")[0];
+    const t = await r.text(); let data; try { data = JSON.parse(t); } catch { data = t; }
+    return { status: r.status, data, headers: r.headers };
+  };
+  const ip = (a) => ({ "cloudfront-viewer-address": a + ":50000" });
+
+  let r = await call("POST", "/api/auth/signup", { name: "Sam", email: "sam@example.com", password: "correct horse 9" }, ip("203.0.113.5"));
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get("set-cookie"), /HttpOnly/);
+  assert.ok(r.headers.get("x-content-type-options") === "nosniff"); ok("web handler: signup works and API responses carry security headers");
+  const c = (await call("POST", "/api/clients", { name: "Zed", email: "zed@example.com" })).data;
+  const token = (await call("GET", "/api/clients/" + c.id)).data.token;
+  const P = "/api/portal/" + token;
+
+  r = await call("POST", P + "/upload-url", { name: "brief.pdf", size: 1234 });
+  assert.equal(r.data.mode, "direct"); assert.match(r.data.url, /^https:\/\/bucket\.s3\./); assert.match(r.data.stored, /^[0-9a-f]{32}$/);
+  const stored = r.data.stored;
+  r = await call("POST", P + "/upload-done", { stored, name: "brief.pdf" });
+  assert.equal(r.status, 400); ok("claiming an upload that never reached S3 is refused");
+  objects.set(`${c.id}/${stored}`, 1234); // the browser's PUT to S3
+  r = await call("POST", P + "/upload-done", { stored, name: "../brief.pdf" });
+  assert.equal(r.status, 200); assert.equal(r.data.size, 1234); assert.ok(!r.data.name.includes("/")); ok("direct upload registered with the size S3 reports");
+  assert.equal((await call("POST", P + "/upload-done", { stored, name: "again" })).status, 409); ok("the same upload can't be added twice");
+  assert.equal((await call("POST", P + "/upload-done", { stored: "../../etc/passwd", name: "x" })).status, 400); ok("upload keys are validated");
+  assert.equal((await call("POST", P + "/upload-url", { name: "big", size: 26 * 1024 * 1024 })).status, 413); ok("26 MB upload refused before any link is issued");
+  r = await call("POST", P + "/upload-url", { name: "sneaky", size: 100 });
+  objects.set(`${c.id}/${r.data.stored}`, 30 * 1024 * 1024); // client lied about the size
+  r = await call("POST", P + "/upload-done", { stored: r.data.stored, name: "sneaky" });
+  assert.equal(r.status, 413); assert.equal([...objects.keys()].filter((k) => objects.get(k) > 26e6).length, 0); ok("an oversized object is rejected and deleted");
+
+  const detail = (await call("GET", "/api/clients/" + c.id)).data;
+  const dl = await handle(new Request(`https://clientword.example/api/clients/${c.id}/files/${detail.files[0].id}`, { headers: { cookie }, redirect: "manual" }));
+  assert.equal(dl.status, 302); assert.match(dl.headers.get("location"), /dl=/); ok("downloads redirect to a short-lived S3 link");
+
+  // rate limits are per real client address (from CloudFront) and live in the table
+  let last;
+  for (let i = 0; i < 11; i++) last = await call("POST", "/api/auth/login", { email: "sam@example.com", password: "wrong" }, ip("198.51.100.9"));
+  assert.equal(last.status, 429);
+  r = await call("POST", "/api/auth/login", { email: "sam@example.com", password: "wrong" }, ip("198.51.100.77"));
+  assert.equal(r.status, 401); ok("login limit counts per CloudFront-reported address, stored in DynamoDB");
+  assert.ok([...(await table.scan("W"))].length > 0); ok("limit counters are TTL'd rows in the table");
+
+  // writes are accepted from the configured APP_URL even when the Host header is the internal one
+  r = await call("PUT", "/api/settings", { welcome: "Hi" }, { origin: "https://clientword.example", host: "internal.amplify.local" });
+  assert.equal(r.status, 200);
+  r = await call("PUT", "/api/settings", { welcome: "Hi" }, { origin: "https://evil.example", host: "internal.amplify.local" });
+  assert.equal(r.status, 403); ok("origin check accepts APP_URL, rejects other sites");
+  assert.equal((await handle(new Request("https://clientword.example/anything"))).status, 404); ok("non-API paths are not handled by the API");
+}
 
 console.log("\nConfig checks");
 assert.throws(() => checkProduction(loadConfig({ NODE_ENV: "production" })), /STORE must be 'dynamo'/);

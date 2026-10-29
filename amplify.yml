@@ -1,0 +1,20 @@
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - npm install --no-audit --no-fund
+    build:
+      commands:
+        # Amplify doesn't pass console environment variables to the server-side code by itself.
+        # Writing them to .env.production makes them available at runtime (this is the documented workaround).
+        - env | grep -E '^(STORE|TABLE_NAME|BUCKET|APP_REGION|APP_URL|MAIL|MAIL_FROM|TRUST_PROXY|CRON_SECRET)=' >> .env.production
+        - npm run build
+  artifacts:
+    baseDirectory: .next
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - node_modules/**/*
+      - .next/cache/**/*
