@@ -1,4 +1,4 @@
-import { el, api, toast, when, size, STATUS, inkFor, ago, initials, dateTime } from "/ui.js";
+import { el, api, toast, when, size, STATUS, inkFor, ago, initials, dateTime, money } from "/ui.js";
 
 const root = document.getElementById("root");
 let me = null;
@@ -26,7 +26,14 @@ function shell(content) {
       navBtn("Setup", "setup"),
       el("div", { class: "who muted" }, me.email, el("br"),
         el("a", { href: "#", onclick: async (e) => { e.preventDefault(); await api("/api/auth/logout", { method: "POST" }); location.href = "/"; } }, "Log out"))),
-    el("main", { class: "main" }, content));
+    el("main", { class: "main" }, banner(), content));
+}
+
+function banner() {
+  if (me.verified) return null;
+  return el("div", { class: "banner", role: "status" },
+    el("span", {}, "Please confirm your email address. We sent a link to ", el("strong", {}, me.email), ". Until you do, Clientword can't email your clients."),
+    el("button", { class: "btn ghost sm", onclick: async () => { try { await api("/api/auth/resend-verify", { method: "POST" }); toast("Confirmation email sent"); } catch (x) { toast(x.message); } } }, "Resend email"));
 }
 const navBtn = (label, name) =>
   el("button", { class: "nav", "aria-current": view.name === name || (name === "clients" && view.name === "client") ? "page" : false, onclick: () => go({ name }) }, label);
@@ -171,7 +178,9 @@ async function clientView(id) {
       el("div", {},
         el("div", { class: "card" }, el("h3", {}, "Their answers"), answers),
         contractCard(c, act),
-        el("div", { class: "card" }, el("h3", {}, "Files"), filesBox),
+        depositCard(c, act),
+        el("div", { class: "card" }, el("h3", {}, "Files from them"), filesBox),
+        linksCard(c, act),
         el("div", { class: "card" }, el("h3", {}, "Call"), meeting)),
       el("div", {},
         messagesCard(c),
@@ -222,6 +231,52 @@ function contractCard(c, act) {
   return card;
 }
 
+
+function depositCard(c, act) {
+  const card = el("div", { class: "card stack" }, el("h3", { style: "margin:0" }, "Deposit"));
+  const d = c.deposit;
+  const edit = () => {
+    const amount = el("input", { type: "number", id: "dp-a", min: "0.01", step: "0.01", value: d ? String(d.amountPence / 100) : "", inputMode: "decimal" });
+    const currency = el("select", { id: "dp-c", "aria-label": "Currency" }, ...["GBP", "EUR", "USD"].map((k) => el("option", { value: k, selected: (d?.currency || c.currency) === k }, k)));
+    const url = el("input", { type: "url", id: "dp-u", placeholder: "https://… (Stripe, PayPal.me or other payment link, optional)", value: d?.url || "" });
+    const note = el("textarea", { id: "dp-n", placeholder: "How to pay, e.g. bank details" }); note.value = d?.note ?? c.payInstructions ?? "";
+    const err = el("div", { class: "err", role: "alert" });
+    card.replaceChildren(el("h3", { style: "margin:0" }, d ? "Edit deposit request" : "Ask for a deposit"),
+      el("p", { class: "hint", style: "margin:0" }, "Clientword doesn't take payment. Your client pays you directly, using your link or bank details, then tells you they've paid."),
+      el("div", { class: "row" }, el("div", { class: "grow" }, el("label", { for: "dp-a" }, "Amount"), amount), el("div", {}, el("label", { for: "dp-c" }, "Currency"), currency)),
+      el("div", {}, el("label", { for: "dp-u" }, "Payment link"), url),
+      el("div", {}, el("label", { for: "dp-n" }, "Payment instructions"), note), err,
+      el("div", { class: "row" },
+        el("button", { class: "btn", onclick: async () => { try { await api(`/api/clients/${c.id}/deposit`, { method: "PUT", body: { amount: amount.value, currency: currency.value, url: url.value.trim(), note: note.value } }); toast("Deposit request saved"); act(async () => {}); } catch (x) { err.textContent = x.message; } } }, "Save"),
+        el("button", { class: "btn ghost", onclick: () => act(async () => {}) }, "Cancel")));
+  };
+  if (!d) {
+    card.append(el("p", { class: "muted", style: "margin:0" }, "No deposit requested. Add one and it becomes a step on your client's page."), el("button", { class: "btn ghost sm", style: "align-self:flex-start", onclick: edit }, "Ask for a deposit"));
+    return card;
+  }
+  card.append(el("div", { class: "row" }, el("strong", { style: "font-size:1.3rem" }, money(d.amountPence, d.currency)),
+    el("span", { class: "chip " + (d.state === "received" ? "active" : d.state === "claimed" ? "ready" : "invited") }, { requested: "Waiting for client", claimed: "Client says paid", received: "Received" }[d.state])));
+  if (d.state === "claimed") card.append(el("p", { class: "hint", style: "margin:0" }, `They said they'd paid ${ago(d.claimedAt)}. Check your account before confirming.`), el("button", { class: "btn", style: "align-self:flex-start", onclick: () => act(() => api(`/api/clients/${c.id}/deposit/received`, { method: "POST" }), "Marked as received") }, "Mark as received"));
+  if (d.state === "received") card.append(el("p", { class: "ok-text", style: "margin:0" }, "✓ Received " + dateTime(d.paidAt)));
+  if (d.state !== "received") card.append(el("div", { class: "row" }, el("button", { class: "btn ghost sm", onclick: edit }, "Edit"),
+    el("button", { class: "btn danger sm", onclick: () => window.confirm("Remove the deposit request?") && act(() => api(`/api/clients/${c.id}/deposit`, { method: "PUT", body: { amount: "" } }), "Removed") }, "Remove")));
+  return card;
+}
+
+function linksCard(c, act) {
+  const title = el("input", { type: "text", placeholder: "Title, e.g. Final logo files", "aria-label": "Link title", maxLength: 120 });
+  const url = el("input", { type: "url", placeholder: "https://drive.google.com/…", "aria-label": "Link address" });
+  const err = el("div", { class: "err", role: "alert" });
+  const list = (c.links || []).length
+    ? el("ul", { class: "files" }, c.links.map((l) => el("li", {}, el("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.title),
+        el("button", { class: "linklike", style: "color:var(--danger)", "aria-label": "Remove " + l.title, onclick: () => act(() => api(`/api/clients/${c.id}/links/${l.id}`, { method: "DELETE" })) }, "Remove"))))
+    : el("p", { class: "muted", style: "margin:0" }, "Nothing shared yet.");
+  return el("div", { class: "card stack" }, el("h3", { style: "margin:0" }, "Shared with them"),
+    el("p", { class: "hint", style: "margin:0" }, "For large deliverables, upload to Drive, Dropbox or similar and share the link here. Your client sees it on their page."), list,
+    el("div", { class: "row" }, el("div", { class: "grow" }, title), el("div", { class: "grow" }, url),
+      el("button", { class: "btn sm", onclick: async () => { try { await api(`/api/clients/${c.id}/links`, { method: "POST", body: { title: title.value, url: url.value.trim() } }); act(async () => {}); } catch (x) { err.textContent = x.message; } } }, "Add")), err);
+}
+
 function messagesCard(c) {
   const thread = el("div", { class: "thread", "aria-live": "polite" });
   const input = el("textarea", { placeholder: "Write a message…", "aria-label": "Message", maxLength: 2000, rows: 1 });
@@ -263,11 +318,14 @@ function setupView() {
     meetingNote: el("input", { type: "text", id: "s-mnote", value: me.meetingNote }),
     askForFiles: el("input", { type: "checkbox", id: "s-files", checked: me.askForFiles }),
     notify: el("input", { type: "checkbox", id: "s-notify", checked: me.notify }),
+    currency: el("select", { id: "s-cur" }, ...["GBP", "EUR", "USD"].map((k) => el("option", { value: k, selected: me.currency === k }, k))),
+    payInstructions: el("textarea", { id: "s-pay", placeholder: "e.g. Bank transfer to Ada Design, sort code 00-00-00, account 12345678. Reference: your name." }),
     ctitle: el("input", { type: "text", id: "s-ct", value: me.contractTemplate.title }),
     cbody: el("textarea", { id: "s-cb", style: "min-height:160px", placeholder: "Paste your standard terms here. You can edit them for each client." }),
   };
   f.welcome.value = me.welcome;
   f.cbody.value = me.contractTemplate.body;
+  f.payInstructions.value = me.payInstructions;
 
   const preview = el("div", { class: "card", style: "padding:0;overflow:hidden" });
   const paintPreview = () => {
@@ -312,12 +370,21 @@ function setupView() {
     section("Contract template",
       el("p", { class: "hint", style: "margin:0" }, "Optional. This text is pre-filled when you add a contract to a client, where you can still change it. Have a solicitor check terms you rely on."),
       el("div", {}, el("label", { for: "s-ct" }, "Title"), f.ctitle), el("div", {}, el("label", { for: "s-cb" }, "Text"), f.cbody)),
-    section("Files", el("label", { for: "s-files", class: "switch" }, f.askForFiles, "Ask clients to upload files (briefs, logos, documents; 10 MB each)")),
+    section("Files", el("label", { for: "s-files", class: "switch" }, f.askForFiles, "Ask clients to upload files (briefs, logos, documents; 25 MB each)")),
     section("Meeting",
       el("p", { class: "hint", style: "margin:0" }, "Paste your booking link from Calendly, Cal.com, Google Calendar appointment pages, etc. Leave empty to skip this step."),
       el("div", {}, el("label", { for: "s-url" }, "Booking link"), f.meetingUrl),
       el("div", {}, el("label", { for: "s-mnote" }, "Short note for the client"), f.meetingNote)),
+    section("Payments",
+      el("p", { class: "hint", style: "margin:0" }, "Used when you ask a client for a deposit. Clientword doesn't handle the money: clients pay you directly."),
+      el("div", {}, el("label", { for: "s-cur" }, "Default currency"), f.currency),
+      el("div", {}, el("label", { for: "s-pay" }, "Default payment instructions"), f.payInstructions)),
     section("Notifications", el("label", { for: "s-notify", class: "switch" }, f.notify, "Email me when a client finishes, signs or messages me")),
+    section("Your data",
+      el("p", { class: "hint", style: "margin:0" }, "Download everything we hold about your account and clients (uploaded files aren't included), or delete your account for good."),
+      el("div", { class: "row" },
+        el("a", { class: "btn ghost", href: "/api/account/export", download: "clientword-export.json" }, "Download my data"),
+        el("button", { class: "btn danger", onclick: deleteAccountModal }, "Delete my account"))),
     err,
   ]);
 
@@ -326,12 +393,29 @@ function setupView() {
     try {
       await api("/api/settings", { method: "PUT", body: {
         name: f.name.value, business: f.business.value, colour: f.colour.value, welcome: f.welcome.value,
-        meetingUrl: f.meetingUrl.value.trim(), meetingNote: f.meetingNote.value, askForFiles: f.askForFiles.checked, notify: f.notify.checked,
+        meetingUrl: f.meetingUrl.value.trim(), meetingNote: f.meetingNote.value, askForFiles: f.askForFiles.checked, notify: f.notify.checked, currency: f.currency.value, payInstructions: f.payInstructions.value,
         contractTemplate: { title: f.ctitle.value, body: f.cbody.value }, questions: q } });
       me = await api("/api/me");
       toast("Saved");
     } catch (x) { err.textContent = x.message; window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }); }
   }
+}
+
+function deleteAccountModal() {
+  const pw = el("input", { type: "password", id: "da-pw", autocomplete: "current-password" });
+  const err = el("div", { class: "err", role: "alert" });
+  const close = () => bg.remove();
+  const bg = el("div", { class: "modal-bg", onclick: (e) => e.target === bg && close() },
+    el("form", { class: "card modal stack", role: "dialog", "aria-modal": "true", "aria-label": "Delete account", onsubmit: async (e) => {
+      e.preventDefault();
+      try { await api("/api/account", { method: "DELETE", body: { password: pw.value } }); location.href = "/"; }
+      catch (x) { err.textContent = x.message; }
+    } },
+      el("h2", {}, "Delete your account?"),
+      el("p", { style: "margin:0" }, "This permanently deletes your account, every client, their answers, files, messages and signed contracts. It can't be undone. Download your data first if you need it."),
+      el("div", {}, el("label", { for: "da-pw" }, "Enter your password to confirm"), pw), err,
+      el("div", { class: "row" }, el("button", { class: "btn danger", type: "submit" }, "Delete everything"), el("button", { class: "btn ghost", type: "button", onclick: close }, "Cancel"))));
+  document.body.append(bg); pw.focus();
 }
 
 boot();

@@ -72,6 +72,18 @@ export const emails = {
     ...layout({ business: f.business, colour: f.colour, heading: `${f.name} sent you a message`,
       paragraphs: [text.length > 400 ? text.slice(0, 400) + "…" : text], button: { label: "Open your page", url: link }, footer: `Sent by ${f.business}.` }),
   }),
+  verify: ({ f, link }) => ({
+    subject: "Confirm your email for Clientword",
+    ...layout({ business: "Clientword", heading: "Confirm your email",
+      paragraphs: [`Hi ${f.name.split(" ")[0]}, please confirm this is your email address. You can't email clients from Clientword until you do.`, "The link works once and expires in 7 days."],
+      button: { label: "Confirm email", url: link }, footer: "If you didn't create a Clientword account, you can ignore this email." }),
+  }),
+  paid: ({ f, c, link }) => ({
+    subject: `${c.name} says they've paid the deposit`,
+    ...layout({ business: "Clientword", heading: "Deposit marked as paid",
+      paragraphs: [`${c.name} says they've paid the deposit${c.project ? ` for "${c.project}"` : ""}.`, "Check your account, then mark it as received on their page."],
+      button: { label: "Open client", url: link }, footer: "You can turn these emails off in Setup." }),
+  }),
   reset: ({ f, link }) => ({
     subject: "Reset your Clientword password",
     ...layout({ business: "Clientword", heading: "Reset your password",

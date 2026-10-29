@@ -183,3 +183,10 @@ footer.site{border-top:1px solid var(--line);padding:24px 0 40px;color:var(--mut
   .stats{grid-template-columns:repeat(2,1fr)} .cols{grid-template-columns:1fr}
   .topbar nav a.hide-sm{display:none}
 }
+
+.banner{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;background:var(--warn-bg);color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:.92rem}
+.banner .btn{color:var(--ink)}
+.deposit-box{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--bg)}
+.deposit-box .amt{font-size:1.8rem;font-weight:800;letter-spacing:-.02em}
+.deposit-box pre{white-space:pre-wrap;font:inherit;margin:8px 0 0;overflow-wrap:anywhere}
+.empty h2{color:var(--ink)}

@@ -47,3 +47,5 @@ export function ago(ms) {
 }
 export const initials = (name) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
 export const dateTime = (ms) => new Date(ms).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+export const money = (pence, currency = "GBP") => new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(pence / 100);

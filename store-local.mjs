@@ -21,6 +21,7 @@ export function createLocalStore(dir) {
       if (db.freelancers.some((x) => x.email === f.email)) return null; // email already used
       db.freelancers.push(copy(f)); save(); return copy(f);
     },
+    async deleteFreelancer(f) { db.freelancers = db.freelancers.filter((x) => x.id !== f.id); save(); },
     async saveFreelancer(f) {
       const i = db.freelancers.findIndex((x) => x.id === f.id);
       if (i >= 0) { db.freelancers[i] = copy(f); save(); }
@@ -49,9 +50,10 @@ export function createLocalStore(dir) {
     async addMessage(m) { db.messages.push(copy(m)); save(); return copy(m); },
 
     async putReset(r) { db.resets = db.resets.filter((x) => x.expires > Date.now()); db.resets.push(copy(r)); save(); },
-    async takeReset(hash) {
-      const r = db.resets.find((x) => x.hash === hash && x.expires > Date.now());
-      db.resets = db.resets.filter((x) => x.hash !== hash); save();
+    // kind is "reset" or "verify"; a token only works for the kind it was made for
+    async takeReset(hash, kind = "reset") {
+      const r = db.resets.find((x) => x.hash === hash && x.expires > Date.now() && (x.kind || "reset") === kind);
+      if (r) { db.resets = db.resets.filter((x) => x.hash !== hash); save(); }
       return copy(r);
     },
   };

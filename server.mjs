@@ -9,9 +9,13 @@ import { createMailer, emails } from "./mail.mjs";
 
 const scrypt = promisify(crypto.scrypt);
 const PUBLIC = path.join(import.meta.dirname, "public");
-const MAX_UPLOAD = 10 * 1024 * 1024; // 10 MB per file
+const MAX_UPLOAD = 25 * 1024 * 1024; // 25 MB per file (bigger deliverables go as links)
 const MAX_FILES = 20; // per client
 const MAX_MESSAGES = 500; // per client
+const MAX_LINKS = 20; // shared links per client
+const VERIFY_DAYS = 7;
+const CURRENCIES = ["GBP", "EUR", "USD"];
+const CLIENT_MAILS_PER_DAY = 100; // per freelancer, so an account can't be used to spam
 const SESSION_DAYS = 14;
 const RESET_MINUTES = 60;
 const REMIND_AFTER_DAYS = 3;
@@ -130,6 +134,7 @@ export function createApp({ config, store, files, mailer }) {
     const steps = [];
     if (f.questions.length) steps.push({ key: "intake", label: "Tell me about your project", done: !!c.intake });
     if (c.contract) steps.push({ key: "contract", label: "Review and sign", done: !!c.contract.signed });
+    if (c.deposit) steps.push({ key: "deposit", label: "Pay your deposit", done: !!(c.deposit.claimedAt || c.deposit.paidAt) });
     if (f.askForFiles) steps.push({ key: "files", label: "Share files", done: c.files.length > 0 || !!c.filesSkipped });
     if (f.meetingUrl) steps.push({ key: "meeting", label: "Book a call", done: !!c.meeting });
     return steps;
@@ -148,8 +153,10 @@ export function createApp({ config, store, files, mailer }) {
     id: c.id, name: c.name, email: c.email, project: c.project, created: c.created,
     status: statusOf(f, c), steps: stepsFor(f, c), token: c.token, lastActivity: c.lastActivity, opened: !!c.opened,
     unread: c.unread || 0, lastMessageAt: c.lastMessageAt || 0, invitedAt: c.invitedAt || 0,
-    reminders: c.reminders || 0, hasContract: !!c.contract, signed: !!c.contract?.signed,
+    reminders: c.reminders || 0, hasContract: !!c.contract, signed: !!c.contract?.signed, deposit: depositState(c),
   });
+  const depositState = (c) => !c.deposit ? "none" : c.deposit.paidAt ? "received" : c.deposit.claimedAt ? "claimed" : "requested";
+  const depositView = (c) => c.deposit && { amountPence: c.deposit.amountPence, currency: c.deposit.currency, note: c.deposit.note, url: c.deposit.url, state: depositState(c), claimedAt: c.deposit.claimedAt || 0, paidAt: c.deposit.paidAt || 0 };
   const clientLink = (req, c) => `${baseUrl(req)}/c/${c.token}`;
 
   // Fire-and-forget email: a mail problem must never break the request that caused it.
@@ -169,6 +176,15 @@ export function createApp({ config, store, files, mailer }) {
       c.notifiedReady = false; // a new step was added, so a later completion should notify again
     }
   }
+
+  async function sendVerification(req, f) {
+    if (!baseUrl(req)) return;
+    const token = secret();
+    await store.putReset({ hash: sha(token), freelancerId: f.id, kind: "verify", expires: Date.now() + VERIFY_DAYS * 86400_000 });
+    notify("verify", { f, link: `${baseUrl(req)}/verify?token=${token}` }, f.email);
+  }
+  // Emails to a freelancer's clients go out only from verified accounts, within a daily cap
+  const clientMailBlock = (f) => !f.emailVerified ? "Please confirm your own email first. We've sent you a link, and you can resend it from the dashboard." : limited("clientmail:" + f.id, CLIENT_MAILS_PER_DAY, 86400_000) ? "You've reached today's email limit. Try again tomorrow." : null;
 
   // ---------- API ----------
   async function api(req, res, url) {
@@ -191,9 +207,10 @@ export function createApp({ config, store, files, mailer }) {
         welcome: "Welcome! A few quick steps so we can get started smoothly.",
         meetingUrl: "", meetingNote: "Pick a time that suits you for a short kick-off call.",
         askForFiles: true, questions: DEFAULT_QUESTIONS, contractTemplate: DEFAULT_CONTRACT, notify: true,
-        created: Date.now(), passwordChangedAt: 0,
+        created: Date.now(), passwordChangedAt: 0, emailVerified: false, currency: "GBP", payInstructions: "",
       });
       if (!f) return fail(res, 409, "An account with that email already exists.");
+      await sendVerification(req, f);
       return json(res, 200, { ok: true }, await startSession(res, f));
     }
     if (p === "/api/auth/login" && method === "POST") {
@@ -216,7 +233,7 @@ export function createApp({ config, store, files, mailer }) {
       const f = await store.freelancerByEmail(clip(b.email, 200).toLowerCase());
       if (f && baseUrl(req)) {
         const token = secret();
-        await store.putReset({ hash: sha(token), freelancerId: f.id, expires: Date.now() + RESET_MINUTES * 60_000 });
+        await store.putReset({ hash: sha(token), freelancerId: f.id, kind: "reset", expires: Date.now() + RESET_MINUTES * 60_000 });
         notify("reset", { f, link: `${baseUrl(req)}/reset?token=${token}` }, f.email);
       }
       return json(res, 200, { ok: true }); // same answer whether or not the account exists
@@ -226,14 +243,27 @@ export function createApp({ config, store, files, mailer }) {
       const b = await readJson(req);
       const pw = String(b.password || "");
       if (pw.length < 8 || pw.length > 200) return fail(res, 400, "Password must be 8 to 200 characters.");
-      const r = await store.takeReset(sha(String(b.token || "")));
+      const r = await store.takeReset(sha(String(b.token || "")), "reset");
       if (!r) return fail(res, 400, "This reset link has expired or was already used. Please request a new one.");
       const f = await store.freelancerById(r.freelancerId);
       if (!f) return fail(res, 400, "This reset link is no longer valid.");
       f.password = await hashPassword(pw);
       f.passwordChangedAt = Date.now();
+      f.emailVerified = true; // they just proved they own the inbox
       await store.saveFreelancer(f);
       return json(res, 200, { ok: true }, await startSession(res, f));
+    }
+
+    if (p === "/api/auth/verify" && method === "POST") {
+      if (limited("verify:" + ip, 20, 3600_000)) return fail(res, 429, "Too many attempts. Try again later.");
+      const b = await readJson(req);
+      const r = await store.takeReset(sha(String(b.token || "")), "verify");
+      if (!r) return fail(res, 400, "This confirmation link has expired or was already used. Log in and ask for a new one.");
+      const f = await store.freelancerById(r.freelancerId);
+      if (!f) return fail(res, 400, "This confirmation link is no longer valid.");
+      f.emailVerified = true;
+      await store.saveFreelancer(f);
+      return json(res, 200, { ok: true });
     }
 
     // scheduled job: remind clients who haven't finished (call daily from any scheduler that can POST)
@@ -245,12 +275,13 @@ export function createApp({ config, store, files, mailer }) {
         if (!c.email) continue;
         let f = cache.get(c.freelancerId);
         if (!f) { f = await store.freelancerById(c.freelancerId); cache.set(c.freelancerId, f); }
-        if (!f) continue;
+        if (!f || !f.emailVerified) continue;
         const st = statusOf(f, c);
         if (st !== "invited" && st !== "in_progress") continue;
         if (!c.invitedAt && !c.lastRemindedAt) continue; // never email someone who wasn't invited by email
         const since = Date.now() - Math.max(c.lastRemindedAt || 0, c.invitedAt || 0); // time since we last emailed them
         if ((c.reminders || 0) >= MAX_REMINDERS || since < REMIND_AFTER_DAYS * 86400_000) continue;
+        if (clientMailBlock(f)) continue;
         notify("reminder", { f, c, link: clientLink(req, c) }, c.email);
         c.reminders = (c.reminders || 0) + 1; c.lastRemindedAt = Date.now();
         await store.saveClient(c); sent++;
@@ -266,7 +297,32 @@ export function createApp({ config, store, files, mailer }) {
     const f = await currentFreelancer(req);
     if (!f) return fail(res, 401, "Please log in.");
 
-    if (p === "/api/me" && method === "GET") return json(res, 200, { email: f.email, notify: f.notify !== false, contractTemplate: f.contractTemplate || DEFAULT_CONTRACT, ...brand(f) });
+    if (p === "/api/auth/resend-verify" && method === "POST") {
+      if (f.emailVerified) return json(res, 200, { ok: true, already: true });
+      if (limited("resend:" + f.id, 3, 3600_000)) return fail(res, 429, "You've asked a few times already. Check your spam folder, or try again later.");
+      await sendVerification(req, f);
+      return json(res, 200, { ok: true });
+    }
+    if (p === "/api/account/export" && method === "GET") {
+      const out = { exportedAt: new Date().toISOString(), account: (({ password, ...rest }) => rest)(f), clients: [] };
+      for (const c of await store.clientsOf(f.id)) out.clients.push({ ...c, messages: await store.messagesOf(c.id) });
+      res.writeHead(200, { "content-type": "application/json", "content-disposition": 'attachment; filename="clientword-export.json"', "cache-control": "no-store" });
+      return res.end(JSON.stringify(out, null, 2));
+    }
+    if (p === "/api/account" && method === "DELETE") {
+      if (limited("delacct:" + f.id, 5, 3600_000)) return fail(res, 429, "Too many attempts. Try again later.");
+      const b = await readJson(req);
+      if (!(await checkPassword(String(b.password || "").slice(0, 200), f.password))) return fail(res, 403, "That password is not correct.");
+      for (const c of await store.clientsOf(f.id)) {
+        for (const file of c.files) await files.del(`${c.id}/${file.stored}`);
+        await store.deleteClient(f.id, c.id);
+      }
+      await store.deleteFreelancer(f); // their sessions stop working because the account no longer exists
+      log("account_deleted", { id: f.id });
+      return json(res, 200, { ok: true }, { "set-cookie": sessionCookie("", 0) });
+    }
+
+    if (p === "/api/me" && method === "GET") return json(res, 200, { email: f.email, verified: !!f.emailVerified, currency: f.currency || "GBP", payInstructions: f.payInstructions || "", notify: f.notify !== false, contractTemplate: f.contractTemplate || DEFAULT_CONTRACT, ...brand(f) });
 
     if (p === "/api/settings" && method === "PUT") {
       const b = await readJson(req);
@@ -281,6 +337,8 @@ export function createApp({ config, store, files, mailer }) {
       f.meetingNote = clip(b.meetingNote, 300);
       f.askForFiles = !!b.askForFiles;
       f.notify = b.notify !== false;
+      if (CURRENCIES.includes(b.currency)) f.currency = b.currency;
+      f.payInstructions = clip(b.payInstructions, 600);
       if (b.contractTemplate) f.contractTemplate = { title: clip(b.contractTemplate.title, 120) || "Service agreement", body: clip(b.contractTemplate.body, 20000) };
       if (Array.isArray(b.questions)) {
         f.questions = b.questions.slice(0, 15).map((q) => ({
@@ -313,7 +371,7 @@ export function createApp({ config, store, files, mailer }) {
       return json(res, 200, clientSummary(f, c));
     }
 
-    m = p.match(/^\/api\/clients\/(\w+)(?:\/(files|contract|invite|remind|messages)(?:\/(\w+))?)?$/);
+    m = p.match(/^\/api\/clients\/(\w+)(?:\/(files|contract|invite|remind|messages|deposit|links)(?:\/(\w+))?)?$/);
     if (!m) return fail(res, 404, "Not found.");
     const c = await store.clientById(f.id, m[1]);
     if (!c) return fail(res, 404, "Client not found.");
@@ -321,7 +379,7 @@ export function createApp({ config, store, files, mailer }) {
 
     if (!sub) {
       if (method === "GET") {
-        return json(res, 200, { ...clientSummary(f, c), intake: c.intake, files: c.files, meeting: c.meeting, notes: c.notes, questions: f.questions, contract: c.contract || null, contractTemplate: f.contractTemplate || DEFAULT_CONTRACT });
+        return json(res, 200, { ...clientSummary(f, c), intake: c.intake, files: c.files, meeting: c.meeting, notes: c.notes, questions: f.questions, contract: c.contract || null, contractTemplate: f.contractTemplate || DEFAULT_CONTRACT, deposit: depositView(c) || null, links: c.links || [], currency: f.currency || "GBP", payInstructions: f.payInstructions || "" });
       }
       if (method === "PATCH") {
         const b = await readJson(req);
@@ -369,6 +427,8 @@ export function createApp({ config, store, files, mailer }) {
     if (sub === "invite" && method === "POST") {
       if (!c.email) return fail(res, 400, "Add an email address for this client first.");
       if (limited("invite:" + c.id, 5, 3600_000)) return fail(res, 429, "You've sent this a few times already. Try again later.");
+      const blockedInvite = clientMailBlock(f);
+      if (blockedInvite) return fail(res, f.emailVerified ? 429 : 403, blockedInvite);
       notify("invite", { f, c, link: clientLink(req, c) }, c.email);
       c.invitedAt = Date.now();
       await store.saveClient(c);
@@ -378,10 +438,53 @@ export function createApp({ config, store, files, mailer }) {
       if (!c.email) return fail(res, 400, "Add an email address for this client first.");
       if (statusOf(f, c) === "ready" || c.status) return fail(res, 400, "This client has nothing left to do.");
       if (Date.now() - (c.lastRemindedAt || 0) < 86400_000) return fail(res, 429, "You reminded them within the last day.");
+      const blockedRemind = clientMailBlock(f);
+      if (blockedRemind) return fail(res, f.emailVerified ? 429 : 403, blockedRemind);
       notify("reminder", { f, c, link: clientLink(req, c) }, c.email);
       c.lastRemindedAt = Date.now(); c.reminders = (c.reminders || 0) + 1;
       await store.saveClient(c);
       return json(res, 200, clientSummary(f, c));
+    }
+
+    if (sub === "deposit" && !subId && method === "PUT") {
+      if (c.deposit?.paidAt) return fail(res, 409, "This deposit is already marked as received.");
+      const b = await readJson(req);
+      const amount = Number(b.amount);
+      if (b.amount === "" || b.amount == null) { c.deposit = null; } // clearing the amount removes the request
+      else {
+        const pence = Math.round(amount * 100);
+        if (!Number.isFinite(amount) || pence < 1 || pence > 100_000_000) return fail(res, 400, "Enter a deposit amount between 0.01 and 1,000,000.");
+        const url = safeUrl(clip(b.url, 500));
+        if (b.url && !url) return fail(res, 400, "The payment link must start with https://");
+        const currency = CURRENCIES.includes(b.currency) ? b.currency : (f.currency || "GBP");
+        c.deposit = { amountPence: pence, currency, note: clip(b.note, 600), url, claimedAt: c.deposit?.claimedAt || 0, paidAt: 0, added: c.deposit?.added || Date.now() };
+      }
+      await checkComplete(req, f, c);
+      await store.saveClient(c);
+      return json(res, 200, clientSummary(f, c));
+    }
+    if (sub === "deposit" && subId === "received" && method === "POST") {
+      if (!c.deposit) return fail(res, 400, "There's no deposit request on this client.");
+      c.deposit.paidAt = Date.now(); c.deposit.claimedAt = c.deposit.claimedAt || c.deposit.paidAt;
+      await checkComplete(req, f, c);
+      await store.saveClient(c);
+      return json(res, 200, clientSummary(f, c));
+    }
+    if (sub === "links" && !subId && method === "POST") {
+      const b = await readJson(req);
+      const title = clip(b.title, 120), url = safeUrl(clip(b.url, 1000));
+      if (!title) return fail(res, 400, "Give the link a title.");
+      if (!url) return fail(res, 400, "The link must start with https://");
+      c.links = c.links || [];
+      if (c.links.length >= MAX_LINKS) return fail(res, 400, "That's the maximum number of links for one client.");
+      c.links.push({ id: rid(), title, url, at: Date.now() });
+      await store.saveClient(c);
+      return json(res, 200, c.links);
+    }
+    if (sub === "links" && subId && method === "DELETE") {
+      c.links = (c.links || []).filter((l) => l.id !== subId);
+      await store.saveClient(c);
+      return json(res, 200, c.links);
     }
 
     if (sub === "messages") {
@@ -396,7 +499,7 @@ export function createApp({ config, store, files, mailer }) {
         if (limited("fmsg:" + f.id, 60, 600_000)) return fail(res, 429, "Slow down a little.");
         if ((await store.messagesOf(c.id)).length >= MAX_MESSAGES) return fail(res, 400, "This conversation is full.");
         const msg = await store.addMessage({ id: rid(), clientId: c.id, from: "freelancer", text, at: Date.now() });
-        if (c.email && Date.now() - (c.lastMailToClient || 0) > MAIL_THROTTLE_MS) {
+        if (c.email && f.emailVerified && Date.now() - (c.lastMailToClient || 0) > MAIL_THROTTLE_MS && !clientMailBlock(f)) {
           notify("messageToClient", { f, c, link: clientLink(req, c), text }, c.email);
           c.lastMailToClient = Date.now(); await store.saveClient(c);
         }
@@ -421,6 +524,7 @@ export function createApp({ config, store, files, mailer }) {
         client: { name: c.name, project: c.project }, brand: brand(f),
         steps: stepsFor(f, c), status: statusOf(f, c), intake: c.intake,
         files: c.files.map(({ id, name, size }) => ({ id, name, size })), meeting: c.meeting,
+        deposit: depositView(c) || null, links: (c.links || []).map(({ id, title, url }) => ({ id, title, url })),
         contract: c.contract ? { title: c.contract.title, body: c.contract.body, signed: c.contract.signed ? { name: c.contract.signed.name, at: c.contract.signed.at } : null } : null,
       });
     }
@@ -442,10 +546,10 @@ export function createApp({ config, store, files, mailer }) {
     if (sub === "/upload" && method === "POST") {
       if (!f.askForFiles) return fail(res, 400, "File uploads are turned off.");
       if (c.files.length >= MAX_FILES) return fail(res, 400, "File limit reached.");
-      if (Number(req.headers["content-length"] || 0) > MAX_UPLOAD) return fail(res, 413, "That file is over 10 MB.");
+      if (Number(req.headers["content-length"] || 0) > MAX_UPLOAD) return fail(res, 413, "That file is over 25 MB.");
       let buf;
       try { buf = await readBody(req, MAX_UPLOAD); }
-      catch (e) { return fail(res, e.code === 413 ? 413 : 400, "That file is over 10 MB."); }
+      catch (e) { return fail(res, e.code === 413 ? 413 : 400, "That file is over 25 MB."); }
       if (!buf.length) return fail(res, 400, "That file is empty.");
       let name = "file";
       try { name = decodeURIComponent(String(req.headers["x-filename"] || "file")); } catch { /* keep default */ }
@@ -490,6 +594,16 @@ export function createApp({ config, store, files, mailer }) {
       if (f.notify !== false) notify("signed", { f, c, link: `${baseUrl(req)}/app` }, f.email);
       return json(res, 200, { ok: true });
     }
+    if (sub === "/paid" && method === "POST") {
+      if (!c.deposit) return fail(res, 400, "There's no deposit to pay.");
+      if (!c.deposit.claimedAt) {
+        c.deposit.claimedAt = Date.now(); c.lastActivity = c.deposit.claimedAt;
+        await checkComplete(req, f, c);
+        await store.saveClient(c);
+        if (f.notify !== false) notify("paid", { f, c, link: `${baseUrl(req)}/app` }, f.email);
+      }
+      return json(res, 200, { ok: true });
+    }
     if (sub === "/messages" && method === "GET") return json(res, 200, await store.messagesOf(c.id));
     if (sub === "/messages" && method === "POST") {
       const b = await readJson(req);
@@ -523,6 +637,7 @@ export function createApp({ config, store, files, mailer }) {
     if (url.pathname === "/") file = "index.html";
     else if (url.pathname === "/app") file = "app.html";
     else if (url.pathname === "/reset") file = "reset.html";
+    else if (url.pathname === "/verify") file = "verify.html";
     else if (url.pathname.startsWith("/c/")) file = "client.html";
     else file = decodeURIComponent(url.pathname.slice(1));
     const full = path.join(PUBLIC, file);
@@ -534,7 +649,7 @@ export function createApp({ config, store, files, mailer }) {
       "content-type": MIME[path.extname(full)] || "application/octet-stream",
       "cache-control": path.extname(full) === ".html" ? "no-cache" : "public, max-age=300",
       // Client and reset links are secret, so keep them out of search engines
-      "x-robots-tag": file === "client.html" || file === "reset.html" || file === "app.html" ? "noindex, nofollow" : "all",
+      "x-robots-tag": ["client.html", "reset.html", "verify.html", "app.html"].includes(file) ? "noindex, nofollow" : "all",
     });
     fs.createReadStream(full).pipe(res);
   }

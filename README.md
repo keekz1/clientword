@@ -6,7 +6,7 @@ books a call and can message back. The freelancer sees everything in one dashboa
 
 ## Run locally (no AWS, no installs)
     node server.mjs        # http://localhost:3000 (Node 20+)
-    node test.mjs          # 110 checks on both storage back ends
+    node test.mjs          # 136 checks on both storage back ends
 
 Locally, data is a JSON file in `data/` and emails are printed to the console.
 

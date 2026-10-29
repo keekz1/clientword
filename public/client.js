@@ -1,4 +1,4 @@
-import { el, api, size, inkFor, toast, ago, dateTime } from "/ui.js";
+import { el, api, size, inkFor, toast, ago, dateTime, money } from "/ui.js";
 
 const root = document.getElementById("root");
 const tok = location.pathname.split("/")[2];
@@ -24,7 +24,7 @@ function render() {
 
   const done = steps.filter((s) => s.done).length;
   const all = steps.length && done === steps.length;
-  const builders = { intake: intakeStep, contract: contractStep, files: filesStep, meeting: meetingStep };
+  const builders = { intake: intakeStep, contract: contractStep, deposit: depositStep, files: filesStep, meeting: meetingStep };
   const sections = steps.map((s, i) => builders[s.key](s, i + 1));
 
   root.replaceChildren(
@@ -37,6 +37,7 @@ function render() {
       all ? el("div", { class: "card finish step" }, el("div", { class: "big" }, "🎉"), el("h2", {}, "You're all set"), el("p", { class: "muted", style: "margin:0" }, `${brand.name} has everything needed and will be in touch. You can come back to this page any time to add more.`)) : null,
       !steps.length ? el("div", { class: "card finish" }, el("p", { style: "margin:0" }, `Nothing to do here yet. ${brand.name} will be in touch.`)) : null,
       sections,
+      linksBox(),
       messagesBox(),
       el("p", { class: "powered" }, "This page is private to you. Please don't share the link.")));
 }
@@ -97,6 +98,28 @@ function contractStep(s, n) {
     err, btn));
 }
 
+// ----- deposit -----
+function depositStep(s, n) {
+  const d = data.deposit;
+  const err = el("div", { class: "err", role: "alert" });
+  const body = el("div", { class: "stack" },
+    el("div", { class: "deposit-box" }, el("div", { class: "hint" }, "Deposit"), el("div", { class: "amt" }, money(d.amountPence, d.currency)),
+      d.note ? el("pre", {}, d.note) : null),
+    d.url ? el("a", { class: "btn" + (s.done ? " ghost" : ""), href: d.url, target: "_blank", rel: "noopener noreferrer" }, "Open payment link ↗") : null);
+  if (d.state === "received") body.append(el("p", { class: "ok-text", style: "margin:0" }, "✓ Payment received. Thank you."));
+  else if (d.state === "claimed") body.append(el("p", { class: "ok-text", style: "margin:0" }, `✓ Thanks. ${data.brand.name.split(" ")[0]} will confirm once it arrives.`));
+  else body.append(el("p", { class: "hint", style: "margin:0" }, "Pay using the details above, then tell us here."), err,
+    el("button", { class: "btn ghost", onclick: async (e) => { e.currentTarget.disabled = true; try { await api(base + "/paid", { method: "POST" }); await load(); toast("Thanks, noted"); } catch (x) { err.textContent = x.message; e.currentTarget.disabled = false; } } }, "I've paid"));
+  return stepShell(s, n, body);
+}
+
+// ----- links shared by the freelancer -----
+function linksBox() {
+  if (!data.links.length) return null;
+  return el("section", { class: "card step" }, el("header", {}, el("h2", {}, "Shared with you")),
+    el("ul", { class: "files" }, data.links.map((l) => el("li", {}, el("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.title), el("span", { class: "muted" }, "↗")))));
+}
+
 // ----- files -----
 function filesStep(s, n) {
   const err = el("div", { class: "err", role: "alert" });
@@ -105,12 +128,12 @@ function filesStep(s, n) {
     ondragover: (e) => { e.preventDefault(); drop.classList.add("over"); },
     ondragleave: () => drop.classList.remove("over"),
     ondrop: (e) => { e.preventDefault(); drop.classList.remove("over"); upload([...e.dataTransfer.files]); } },
-    "Drop files here or click to choose", el("div", { class: "small" }, "Up to 10 MB each"));
+    "Drop files here or click to choose", el("div", { class: "small" }, "Up to 25 MB each"));
 
   async function upload(files) {
     err.textContent = "";
     for (const file of files) {
-      if (file.size > 10 * 1024 * 1024) { err.textContent = `${file.name} is over 10 MB.`; continue; }
+      if (file.size > 25 * 1024 * 1024) { err.textContent = `${file.name} is over 25 MB.`; continue; }
       drop.firstChild.textContent = `Uploading ${file.name}…`;
       try { await api(base + "/upload", { method: "POST", body: file, headers: { "x-filename": encodeURIComponent(file.name) } }); }
       catch (x) { err.textContent = `${file.name}: ${x.message}`; }

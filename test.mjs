@@ -66,6 +66,20 @@ async function suite(name, make) {
   const ada2 = agent();
   assert.equal((await ada2("POST", "/api/auth/login", { email: "ada@x.com", password: "correct-horse" })).status, 200); ok("login works");
 
+  // --- email verification (done first, while Ada is still unverified) ---
+  const verifyMail = mailTo("ada@x.com", "Confirm your email")[0];
+  assert.ok(verifyMail, "verification email sent at signup");
+  const verifyToken = verifyMail.text.match(/token=([\w-]+)/)[1]; ok("signup sends a verification email");
+  assert.equal((await ada("GET", "/api/me")).data.verified, false);
+  const pre = (await ada("POST", "/api/clients", { name: "Pre", email: "pre@x.com" })).data;
+  assert.equal((await ada("POST", `/api/clients/${pre.id}/invite`)).status, 403); ok("unverified accounts can't email clients");
+  assert.equal((await anon("POST", "/api/auth/verify", { token: "nope" })).status, 400);
+  assert.equal((await anon("POST", "/api/auth/verify", { token: verifyToken })).status, 200);
+  assert.equal((await anon("POST", "/api/auth/verify", { token: verifyToken })).status, 400); ok("email verification works once");
+  assert.equal((await ada("GET", "/api/me")).data.verified, true);
+  assert.equal((await ada("POST", `/api/clients/${pre.id}/invite`)).status, 200); ok("verified accounts can email clients");
+  await ada("DELETE", "/api/clients/" + pre.id);
+
   // --- password reset ---
   mailer.outbox.length = 0;
   assert.equal((await anon("POST", "/api/auth/forgot", { email: "nobody@x.com" })).status, 200); await tick();
@@ -112,6 +126,20 @@ async function suite(name, make) {
   r = await A("PUT", `/api/clients/${c.id}/contract`, { title: "Agreement", body: "I will build your website for the agreed price." });
   assert.equal(r.status, 200); assert.equal(r.data.steps.length, 4); ok("contract added and becomes a client step");
 
+  // --- deposit request ---
+  assert.equal((await A("PUT", `/api/clients/${c.id}/deposit`, { amount: "abc" })).status, 400);
+  assert.equal((await A("PUT", `/api/clients/${c.id}/deposit`, { amount: 500, url: "javascript:alert(1)" })).status, 400); ok("deposit needs a sensible amount and an https link");
+  r = await A("PUT", `/api/clients/${c.id}/deposit`, { amount: 500, currency: "GBP", url: "https://pay.example/abc", note: "Sort code 00-00-00, account 12345678" });
+  assert.equal(r.status, 200); assert.equal(r.data.deposit, "requested"); assert.equal(r.data.steps.length, 5); ok("deposit request added as a client step");
+  const dep = (await A("GET", "/api/clients/" + c.id)).data.deposit;
+  assert.equal(dep.amountPence, 50000); assert.equal(dep.state, "requested");
+
+  // --- shared links ---
+  assert.equal((await A("POST", `/api/clients/${c.id}/links`, { title: "Final files", url: "javascript:x" })).status, 400);
+  assert.equal((await A("POST", `/api/clients/${c.id}/links`, { title: "", url: "https://drive.example/x" })).status, 400);
+  let links = (await A("POST", `/api/clients/${c.id}/links`, { title: "Logo pack", url: "https://drive.example/logo" })).data;
+  assert.equal(links.length, 1); ok("freelancer can share a link (https only, needs a title)");
+
   // --- client portal (no login) ---
   let p = await anon("GET", "/api/portal/" + c.token);
   assert.equal(p.status, 200); assert.equal(p.data.brand.business, "Ada Design");
@@ -123,7 +151,7 @@ async function suite(name, make) {
   assert.equal((await anon("POST", `/api/portal/${c.token}/intake`, { answers: { [qid]: "A site <b>x</b>", [sid]: "M" } })).status, 200); ok("intake saved");
   r = await anon("POST", `/api/portal/${c.token}/upload`, Buffer.from("hello brief"), { raw: true, headers: { "x-filename": encodeURIComponent("../../etc/brief.txt") } });
   assert.equal(r.status, 200); assert.ok(!r.data.name.includes("/")); ok("upload works; path separators stripped from the name");
-  assert.equal((await anon("POST", `/api/portal/${c.token}/upload`, Buffer.alloc(11 * 1024 * 1024), { raw: true })).status, 413); ok("11 MB upload rejected");
+  assert.equal((await anon("POST", `/api/portal/${c.token}/upload`, Buffer.alloc(26 * 1024 * 1024), { raw: true })).status, 413); ok("26 MB upload rejected (limit is 25 MB)");
   assert.equal((await anon("POST", `/api/portal/${c.token}/meeting`, { when: "Tue 2pm" })).status, 200); ok("meeting noted");
   p = await anon("GET", "/api/portal/" + c.token);
   assert.equal(p.data.status, "in_progress"); ok("still 'in progress' while the contract is unsigned");
@@ -135,8 +163,17 @@ async function suite(name, make) {
   assert.equal((await anon("POST", `/api/portal/${c.token}/sign`, { name: "Grace Hopper", agree: true })).status, 200); await tick();
   assert.equal((await anon("POST", `/api/portal/${c.token}/sign`, { name: "Grace Hopper", agree: true })).status, 409); ok("can sign only once");
   p = await anon("GET", "/api/portal/" + c.token);
-  assert.equal(p.data.status, "ready"); assert.ok(p.data.steps.every((s) => s.done)); ok("status becomes 'ready' when every step is done");
-  assert.equal(mailTo("ada@x.com", "signed").length, 1); assert.equal(mailTo("ada@x.com", "finished onboarding").length, 1); ok("freelancer emailed once for signature and once for completion");
+  assert.equal(p.data.status, "in_progress"); assert.equal(p.data.deposit.state, "requested"); assert.equal(p.data.links[0].title, "Logo pack"); ok("client sees the deposit request and shared link; not 'ready' until the deposit step is done");
+  assert.ok(!JSON.stringify(p.data).includes(links[0].at)); // internal fields stay hidden
+  assert.equal((await anon("POST", `/api/portal/${c.token}/paid`)).status, 200);
+  assert.equal((await anon("POST", `/api/portal/${c.token}/paid`)).status, 200); await tick();
+  p = await anon("GET", "/api/portal/" + c.token);
+  assert.equal(p.data.status, "ready"); assert.ok(p.data.steps.every((s) => s.done)); assert.equal(p.data.deposit.state, "claimed"); ok("status becomes 'ready' when every step is done");
+  assert.equal(mailTo("ada@x.com", "signed").length, 1); assert.equal(mailTo("ada@x.com", "finished onboarding").length, 1); assert.equal(mailTo("ada@x.com", "paid the deposit").length, 1); ok("freelancer emailed once each for signature, payment claim and completion");
+  assert.equal((await A("POST", `/api/clients/${c.id}/deposit/received`)).data.deposit, "received");
+  assert.equal((await A("PUT", `/api/clients/${c.id}/deposit`, { amount: 1 })).status, 409); ok("freelancer confirms receipt; a received deposit can't be changed");
+  links = (await A("DELETE", `/api/clients/${c.id}/links/${links[0].id}`)).data;
+  assert.equal(links.length, 0); ok("shared link can be removed");
   const detail = (await A("GET", "/api/clients/" + c.id)).data;
   const sig = detail.contract.signed;
   assert.equal(sig.name, "Grace Hopper"); assert.match(sig.hash, /^[0-9a-f]{64}$/); ok("signature record has name, time and SHA-256 of the text");
@@ -147,6 +184,7 @@ async function suite(name, make) {
   const dl = await A("GET", `/api/clients/${c.id}/files/${detail.files[0].id}`);
   assert.equal(dl.data, "hello brief"); assert.match(dl.headers.get("content-disposition"), /attachment/); ok("file download is an attachment");
   await bob("POST", "/api/auth/signup", { name: "Bob", email: "bob@x.com", password: "another-pass-1" });
+  const bobVerify = mailTo("bob@x.com", "Confirm your email")[0].text.match(/token=([\w-]+)/)[1];
   assert.equal((await bob("GET", "/api/clients/" + c.id)).status, 404);
   assert.equal((await bob("GET", `/api/clients/${c.id}/files/${detail.files[0].id}`)).status, 404);
   assert.equal((await bob("GET", `/api/clients/${c.id}/messages`)).status, 404);
@@ -175,6 +213,14 @@ async function suite(name, make) {
   assert.equal(cm.length, 3); assert.equal(cm[2].from, "freelancer"); ok("freelancer reply reaches the client (page and email)");
   assert.equal((await A("POST", `/api/clients/${c.id}/messages`, { text: "x".repeat(5000) })).data.text.length, 2000); ok("messages are capped at 2000 characters");
 
+  // --- data export ---
+  const exp = await A("GET", "/api/account/export");
+  assert.match(exp.headers.get("content-disposition"), /attachment/);
+  const expText = JSON.stringify(exp.data);
+  assert.ok(!expText.includes("scrypt") && !/"password"/.test(expText));
+  const expJson = exp.data;
+  assert.equal(expJson.clients.find((x) => x.id === c.id).messages.length, 4); ok("account export includes clients and messages, but not the password");
+
   // --- reminders job ---
   const c2 = (await A("POST", "/api/clients", { name: "Slow Client", email: "slow@x.com" })).data;
   await A("POST", `/api/clients/${c2.id}/invite`);
@@ -188,6 +234,18 @@ async function suite(name, make) {
   assert.equal(mailTo("slow@x.com", "Reminder").length, 1);
   assert.equal((await cron("test-cron-secret-0123456789abcdef")).data.sent, 0); ok("reminder sent after 3 days, then not again right away");
   assert.equal((await cron("test-cron-secret-0123456789abcdef")).data.sent, 0);
+
+  // --- Bob: token kinds, then deleting an account ---
+  assert.equal((await anon("POST", "/api/auth/reset", { token: bobVerify, password: "hijack-pass-1" })).status, 400);
+  assert.equal((await anon("POST", "/api/auth/verify", { token: bobVerify })).status, 200); ok("a verification link can't be used to reset a password");
+  assert.equal((await bob("DELETE", "/api/account", { password: "wrong-password" })).status, 403);
+  const bobClient = (await bob("POST", "/api/clients", { name: "Bob's client", email: "bc@x.com" })).data;
+  await bob("POST", `/api/clients/${bobClient.id}/links`, { title: "L", url: "https://x.example/l" });
+  assert.equal((await bob("DELETE", "/api/account", { password: "another-pass-1" })).status, 200);
+  assert.equal((await bob("GET", "/api/me")).status, 401);
+  assert.equal((await anon("POST", "/api/auth/login", { email: "bob@x.com", password: "another-pass-1" })).status, 401);
+  assert.equal((await anon("GET", "/api/portal/" + bobClient.token)).status, 404);
+  assert.equal((await anon("POST", "/api/auth/signup", { name: "Bob Again", email: "bob@x.com", password: "another-pass-1" })).status, 200); ok("deleting an account needs the password and removes the account, clients and links; the email can sign up again");
 
   // --- status, notes, deletion ---
   assert.equal((await A("PATCH", "/api/clients/" + c.id, { status: "active", notes: "Great fit" })).data.status, "active"); ok("mark active + notes");

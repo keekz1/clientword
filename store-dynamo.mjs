@@ -31,6 +31,10 @@ export function createDynamoStore(table) {
       return f;
     },
     async saveFreelancer(f) { await table.put({ pk: `F#${f.id}`, sk: "META", ...f }); },
+    async deleteFreelancer(f) {
+      await table.del(`F#${f.id}`, "META");
+      await table.del(`E#${f.email}`, "META");
+    },
 
     async addSession(s) { await table.put({ pk: `S#${s.id}`, sk: "META", ...s, ttl: ttl(s.expires) }); },
     async session(id) {
@@ -64,7 +68,10 @@ export function createDynamoStore(table) {
     async addMessage(m) { await table.put({ pk: `M#${m.clientId}`, sk: `${pad(m.at)}#${m.id}`, ...m }); return m; },
 
     async putReset(r) { await table.put({ pk: `R#${r.hash}`, sk: "META", ...r, ttl: ttl(r.expires) }); },
-    async takeReset(hash) {
+    // kind is "reset" or "verify"; a token only works for the kind it was made for
+    async takeReset(hash, kind = "reset") {
+      const seen = await table.get(`R#${hash}`, "META");
+      if (!seen || (seen.kind || "reset") !== kind) return undefined;
       const old = strip(await table.del(`R#${hash}`, "META", { returnOld: true })); // delete + read in one step: single use
       return old && old.expires > Date.now() ? old : undefined;
     },

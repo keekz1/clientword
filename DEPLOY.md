@@ -8,7 +8,7 @@
 Runs as one container on **AWS App Runner**, with **DynamoDB** (data), **S3** (uploaded files) and **SES** (email).
 `infra/template.yaml` creates all of it. Costs a few pounds a month at small scale (check the AWS pricing calculator).
 
-> Status: the app logic is tested (110 checks, including the DynamoDB logic on an in-memory table).
+> Status: the app logic is tested (136 checks, including the DynamoDB logic on an in-memory table).
 > The thin AWS SDK wrappers (`dynamo-adapter.mjs`, `files.mjs`, `mail.mjs`) and `infra/template.yaml`
 > have **not** been run against real AWS yet. Do a first deployment in a throwaway stack and click through it.
 
