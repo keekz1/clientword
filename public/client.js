@@ -1,4 +1,5 @@
 import { el, api, size, inkFor, toast, ago, dateTime, money } from "/ui.js";
+import { openSigner, pdfToWord, fetchBytes, saveFile } from "/pdfdoc.js";
 
 const root = document.getElementById("root");
 const tok = location.pathname.split("/")[2];
@@ -24,7 +25,7 @@ function render() {
 
   const done = steps.filter((s) => s.done).length;
   const all = steps.length && done === steps.length;
-  const builders = { intake: intakeStep, contract: contractStep, deposit: depositStep, files: filesStep, meeting: meetingStep };
+  const builders = { intake: intakeStep, contract: contractStep, document: documentStep, deposit: depositStep, files: filesStep, meeting: meetingStep };
   const sections = steps.map((s, i) => builders[s.key](s, i + 1));
 
   root.replaceChildren(
@@ -71,6 +72,47 @@ function intakeStep(s, n) {
     catch (x) { err.textContent = x.message; btn.disabled = false; }
   } }, fields, err, btn);
   return stepShell(s, n, form);
+}
+
+// ----- PDF document: fill in, sign, download, or convert to Word -----
+function documentStep(s, n) {
+  const d = data.document, err = el("div", { class: "err", role: "alert" });
+  const run = (btn, label, fn) => async () => {
+    err.textContent = ""; btn.disabled = true; const old = btn.textContent; btn.textContent = label;
+    try { await fn(); } catch (x) { err.textContent = x.message; } finally { btn.disabled = false; btn.textContent = old; }
+  };
+  const word = el("button", { class: "btn ghost sm", type: "button" }, "Download as Word");
+  word.onclick = run(word, "Converting…", async () => {
+    const blob = await pdfToWord(await fetchBytes(base + "/document-file"), d.name);
+    saveFile(blob, d.name.replace(/\.pdf$/i, "") + ".docx");
+  });
+  if (d.signed) {
+    const dl = el("a", { class: "btn ghost sm", href: base + "/document-signed" }, "Download signed PDF");
+    return stepShell(s, n, el("div", { class: "stack" },
+      el("strong", {}, d.name),
+      el("p", { class: "ok-text", style: "margin:0" }, `✓ Signed by ${d.signed.name} on ${dateTime(d.signed.at)}`),
+      el("div", { class: "doc-actions" }, dl, word), err));
+  }
+  const open = el("button", { class: "btn", type: "button" }, "Open and sign");
+  open.onclick = run(open, "Opening…", async () => {
+    const bytes = await fetchBytes(base + "/document-file");
+    await openSigner({ bytes, filename: d.name, defaultName: data.client.name, onComplete: async ({ bytes: out, name, agree }) => {
+      const t = await api(base + "/document-upload-url", { method: "POST", body: { size: out.length } });
+      let stored;
+      const blob = new Blob([out], { type: "application/pdf" });
+      if (t.mode === "direct") {
+        let put; try { put = await fetch(t.url, { method: "PUT", body: blob, headers: t.headers || {} }); } catch { throw new Error("The upload didn't complete. Check your connection and try again."); }
+        if (!put.ok) throw new Error("The upload didn't complete. Please try again.");
+        stored = t.stored;
+      } else stored = (await api(base + "/document-upload", { method: "POST", body: blob })).stored;
+      await api(base + "/document-sign", { method: "POST", body: { stored, name, agree } });
+      load();
+    } });
+  });
+  return stepShell(s, n, el("div", { class: "stack" },
+    el("strong", {}, d.name),
+    el("p", { class: "hint", style: "margin:0" }, "Open the document, fill in anything that's needed (text, date, ticks), add your signature, then press Finish. It works on phones too."),
+    el("div", { class: "doc-actions" }, open, el("a", { class: "btn ghost sm", href: base + "/document-file" }, "Download PDF"), word), err));
 }
 
 // ----- contract -----

@@ -7,7 +7,7 @@ emailed when a client finishes.
 
 ## Run locally (no AWS, no installs)
     node server.mjs        # http://localhost:3000 (Node 20+)
-    node test.mjs          # 152 checks: local store, DynamoDB logic on an in-memory table, and the serverless path
+    node test.mjs          # 167 checks: local store, DynamoDB logic on an in-memory table, and the serverless path
 
 Locally, data is a JSON file in `data/` and emails are printed to the console.
 
@@ -32,6 +32,7 @@ The app logic lives in one file written against standard `Request`/`Response`, s
 | `limiter.mjs` | Rate limits: in memory locally, DynamoDB counters on Amplify |
 | `security.mjs`, `next.config.mjs` | Security headers (CSP etc.) and page routes for Next.js |
 | `config.mjs` | Environment settings, and refuses unsafe production config |
+| `public/pdfdoc.js`, `public/vendor/` | In-browser PDF fill-in and signing, and PDF to Word (pdf.js, pdf-lib, docx, all bundled, nothing loaded from outside) |
 | `public/` | Landing page, dashboard, client page (plain JS, served by Next.js as static files) |
 | `amplify.yml` | Amplify build settings |
 | `infra/template.yaml` | CloudFormation: DynamoDB, S3, the app's IAM role, daily reminders |

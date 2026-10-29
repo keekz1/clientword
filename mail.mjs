@@ -62,6 +62,12 @@ export const emails = {
       paragraphs: [`${c.name} signed "${c.contract?.title}" by typing their name.`, "The signature record is saved on their page."],
       button: { label: "View record", url: link }, footer: "You can turn these emails off in Setup." }),
   }),
+  documentSigned: ({ f, c, link }) => ({
+    subject: `${c.name} signed "${c.document?.name || "your document"}"`,
+    ...layout({ business: "Clientword", heading: "Document signed",
+      paragraphs: [`${c.name} filled in and signed "${c.document?.name}".`, "The signed PDF is on their page in your dashboard."],
+      button: { label: "Open dashboard", url: link }, footer: "You can turn these emails off in Setup." }),
+  }),
   messageToFreelancer: ({ f, c, link, text }) => ({
     subject: `New message from ${c.name}`,
     ...layout({ business: "Clientword", heading: `${c.name} sent you a message`,

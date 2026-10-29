@@ -11,7 +11,7 @@ import { createHandler } from "./core.mjs";
 import { securityHeaders } from "./security.mjs";
 
 const PUBLIC = path.join(import.meta.dirname, "public");
-const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon" };
+const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon" };
 const PAGES = { "/": "index.html", "/app": "app.html", "/reset": "reset.html", "/verify": "verify.html", "/privacy": "privacy.html", "/terms": "terms.html" };
 
 export function createApp({ config, store, files, mailer, limiter }) {

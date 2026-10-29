@@ -117,6 +117,7 @@ export function createHandler({ config, store, files, mailer, limiter }) {
     const steps = [];
     if (f.questions.length) steps.push({ key: "intake", label: "Tell me about your project", done: !!c.intake });
     if (c.contract) steps.push({ key: "contract", label: "Review and sign", done: !!c.contract.signed });
+    if (c.document) steps.push({ key: "document", label: "Review and sign your document", done: !!c.document.signed });
     if (c.deposit) steps.push({ key: "deposit", label: "Pay your deposit", done: !!(c.deposit.claimedAt || c.deposit.paidAt) });
     if (f.askForFiles) steps.push({ key: "files", label: "Share files", done: c.files.length > 0 || !!c.filesSkipped });
     if (f.meetingUrl) steps.push({ key: "meeting", label: "Book a call", done: !!c.meeting });
@@ -136,10 +137,58 @@ export function createHandler({ config, store, files, mailer, limiter }) {
     id: c.id, name: c.name, email: c.email, project: c.project, created: c.created,
     status: statusOf(f, c), steps: stepsFor(f, c), token: c.token, lastActivity: c.lastActivity, opened: !!c.opened,
     unread: c.unread || 0, lastMessageAt: c.lastMessageAt || 0, invitedAt: c.invitedAt || 0,
-    reminders: c.reminders || 0, hasContract: !!c.contract, signed: !!c.contract?.signed, deposit: depositState(c),
+    reminders: c.reminders || 0, hasDocument: !!c.document, documentSigned: !!c.document?.signed, hasContract: !!c.contract, signed: !!c.contract?.signed, deposit: depositState(c),
   });
   const depositState = (c) => !c.deposit ? "none" : c.deposit.paidAt ? "received" : c.deposit.claimedAt ? "claimed" : "requested";
   const depositView = (c) => c.deposit && { amountPence: c.deposit.amountPence, currency: c.deposit.currency, note: c.deposit.note, url: c.deposit.url, state: depositState(c), claimedAt: c.deposit.claimedAt || 0, paidAt: c.deposit.paidAt || 0 };
+  const documentView = (c) => c.document && {
+    name: c.document.name, size: c.document.size, at: c.document.at,
+    signed: c.document.signed ? { name: c.document.signed.name, at: c.document.signed.at, ip: c.document.signed.ip, originalHash: c.document.signed.originalHash, signedHash: c.document.signed.signedHash, size: c.document.signed.size } : null,
+  };
+  // PDFs are checked by content, not by the name the browser reports
+  const isPdf = (buf) => !!buf && buf.length > 8 && buf.subarray(0, 5).toString("latin1") === "%PDF-";
+  const docKey = (c, stored) => `${c.id}/${stored}`;
+  async function dropDocument(c) { // delete the stored objects behind a document
+    if (!c.document) return;
+    await files.del(docKey(c, c.document.stored));
+    if (c.document.signed?.stored) await files.del(docKey(c, c.document.signed.stored));
+  }
+  // Send a stored file to the browser: S3 link when there is one, else the bytes (as a download, never rendered)
+  async function sendStored(key, filename) {
+    const safe = filename.replace(/[^\w.\- ]/g, "_");
+    const direct = await files.presignGet(key, safe);
+    if (direct) return new Response(null, { status: 302, headers: { location: direct, "cache-control": "no-store" } });
+    const buf = await files.get(key);
+    if (!buf) return fail(404, "File not found.");
+    return new Response(buf, { status: 200, headers: { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="${safe}"`, "x-content-type-options": "nosniff", "cache-control": "no-store" } });
+  }
+  // Same two-step upload used for files: ask where to put it, then confirm it arrived
+  async function uploadTarget(c, size) {
+    const n = Math.floor(Number(size));
+    if (!Number.isFinite(n) || n < 1) return fail(400, "That file is empty.");
+    if (n > MAX_UPLOAD) return fail(413, "That file is over 25 MB.");
+    const stored = crypto.randomBytes(16).toString("hex");
+    const target = await files.presignPut(docKey(c, stored), n);
+    if (!target) return json(200, { mode: "server" });
+    return json(200, { mode: "direct", stored, url: target.url, headers: target.headers });
+  }
+  async function rawUpload(req, c) { // local development: bytes go through the server
+    let buf;
+    try { buf = await readBytes(req, MAX_UPLOAD); } catch (e) { return fail(e.code === 413 ? 413 : 400, "That file is over 25 MB."); }
+    if (!buf.length) return fail(400, "That file is empty.");
+    const stored = crypto.randomBytes(16).toString("hex");
+    await files.put(docKey(c, stored), buf);
+    return json(200, { stored });
+  }
+  async function checkUploadedPdf(c, stored) { // -> { buf } or { error: Response }
+    if (!/^[0-9a-f]{32}$/.test(String(stored))) return { error: fail(400, "Bad upload.") };
+    const size = await files.size(docKey(c, stored));
+    if (!size) return { error: fail(400, "The upload didn't arrive. Please try again.") };
+    if (size > MAX_UPLOAD) { await files.del(docKey(c, stored)); return { error: fail(413, "That file is over 25 MB.") }; }
+    const buf = await files.get(docKey(c, stored));
+    if (!isPdf(buf)) { await files.del(docKey(c, stored)); return { error: fail(400, "That doesn't look like a PDF file.") }; }
+    return { buf, size };
+  }
   const clientLink = (req, c) => `${baseUrl(req)}/c/${c.token}`;
 
   // Fire-and-forget email: a mail problem must never break the request that caused it.
@@ -315,6 +364,7 @@ export function createHandler({ config, store, files, mailer, limiter }) {
       if (!(await checkPassword(String(b.password || "").slice(0, 200), f.password))) return fail(403, "That password is not correct.");
       for (const c of await store.clientsOf(f.id)) {
         for (const file of c.files) await files.del(`${c.id}/${file.stored}`);
+        await dropDocument(c);
         await store.deleteClient(f.id, c.id);
       }
       await store.deleteFreelancer(f); // their sessions stop working because the account no longer exists
@@ -383,7 +433,7 @@ export function createHandler({ config, store, files, mailer, limiter }) {
       return json(200, clientSummary(f, c));
     }
 
-    m = p.match(/^\/api\/clients\/(\w+)(?:\/(files|contract|invite|remind|messages|deposit|links)(?:\/(\w+))?)?$/);
+    m = p.match(/^\/api\/clients\/(\w+)(?:\/(files|contract|invite|remind|messages|deposit|links|document)(?:\/([\w-]+))?)?$/);
     if (!m) return fail(404, "Not found.");
     const c = await store.clientById(f.id, m[1]);
     if (!c) return fail(404, "Client not found.");
@@ -391,7 +441,7 @@ export function createHandler({ config, store, files, mailer, limiter }) {
 
     if (!sub) {
       if (method === "GET") {
-        return json(200, { ...clientSummary(f, c), intake: c.intake, files: c.files, meeting: c.meeting, notes: c.notes, questions: f.questions, contract: c.contract || null, contractTemplate: f.contractTemplate || DEFAULT_CONTRACT, deposit: depositView(c) || null, links: c.links || [], currency: f.currency || "GBP", payInstructions: f.payInstructions || "" });
+        return json(200, { ...clientSummary(f, c), intake: c.intake, files: c.files, meeting: c.meeting, notes: c.notes, questions: f.questions, contract: c.contract || null, contractTemplate: f.contractTemplate || DEFAULT_CONTRACT, deposit: depositView(c) || null, document: documentView(c) || null, links: c.links || [], currency: f.currency || "GBP", payInstructions: f.payInstructions || "" });
       }
       if (method === "PATCH") {
         const b = await readJson(req);
@@ -403,6 +453,7 @@ export function createHandler({ config, store, files, mailer, limiter }) {
       }
       if (method === "DELETE") {
         for (const file of c.files) await files.del(`${c.id}/${file.stored}`);
+        await dropDocument(c);
         await store.deleteClient(f.id, c.id);
         return json(200, { ok: true });
       }
@@ -421,6 +472,44 @@ export function createHandler({ config, store, files, mailer, limiter }) {
         "content-type": "application/octet-stream", // never let the browser render an upload
         "content-disposition": `attachment; filename="${safe}"`, "x-content-type-options": "nosniff", "cache-control": "no-store",
       } });
+    }
+
+    if (sub === "document") {
+      if (subId === "upload-url" && method === "POST") {
+        if (c.document?.signed) return fail(409, "This document is already signed and can't be replaced.");
+        return uploadTarget(c, (await readJson(req)).size);
+      }
+      if (subId === "upload" && method === "POST") {
+        if (c.document?.signed) return fail(409, "This document is already signed and can't be replaced.");
+        return rawUpload(req, c);
+      }
+      if (subId === "done" && method === "POST") {
+        if (c.document?.signed) return fail(409, "This document is already signed and can't be replaced.");
+        const b = await readJson(req);
+        const chk = await checkUploadedPdf(c, b.stored);
+        if (chk.error) return chk.error;
+        await dropDocument(c); // replacing an unsigned document
+        c.document = { name: clip(b.name, 120).replace(/[\\/\0]/g, "_") || "document.pdf", stored: String(b.stored), size: chk.size, at: Date.now(), signed: null };
+        await checkComplete(req, f, c);
+        await store.saveClient(c);
+        return json(200, clientSummary(f, c));
+      }
+      if (subId === "file" && method === "GET") {
+        if (!c.document) return fail(404, "No document.");
+        return sendStored(docKey(c, c.document.stored), c.document.name);
+      }
+      if (subId === "signed" && method === "GET") {
+        if (!c.document?.signed) return fail(404, "Not signed yet.");
+        return sendStored(docKey(c, c.document.signed.stored), c.document.name.replace(/\.pdf$/i, "") + " - signed.pdf");
+      }
+      if (!subId && method === "DELETE") {
+        if (!c.document) return json(200, clientSummary(f, c));
+        await dropDocument(c);
+        c.document = null;
+        await checkComplete(req, f, c);
+        await store.saveClient(c);
+        return json(200, clientSummary(f, c));
+      }
     }
 
     if (sub === "contract" && subId === "record" && method === "GET") return signedCopy(f, c) || fail(404, "This contract hasn't been signed yet.");
@@ -539,7 +628,8 @@ export function createHandler({ config, store, files, mailer, limiter }) {
         client: { name: c.name, project: c.project }, brand: brand(f),
         steps: stepsFor(f, c), status: statusOf(f, c), intake: c.intake,
         files: c.files.map(({ id, name, size }) => ({ id, name, size })), meeting: c.meeting,
-        deposit: depositView(c) || null, links: (c.links || []).map(({ id, title, url }) => ({ id, title, url })),
+        deposit: depositView(c) || null, document: c.document ? { name: c.document.name, size: c.document.size, signed: c.document.signed ? { name: c.document.signed.name, at: c.document.signed.at } : null } : null,
+        links: (c.links || []).map(({ id, title, url }) => ({ id, title, url })),
         contract: c.contract ? { title: c.contract.title, body: c.contract.body, signed: c.contract.signed ? { name: c.contract.signed.name, at: c.contract.signed.at } : null } : null,
       });
     }
@@ -651,6 +741,42 @@ export function createHandler({ config, store, files, mailer, limiter }) {
       return json(200, { ok: true });
     }
     if (sub === "/contract-copy" && method === "GET") return signedCopy(f, c) || fail(404, "This contract hasn't been signed yet.");
+    if (sub === "/document-file" && method === "GET") return c.document ? sendStored(docKey(c, c.document.stored), c.document.name) : fail(404, "No document.");
+    if (sub === "/document-signed" && method === "GET") {
+      if (!c.document?.signed) return fail(404, "Not signed yet.");
+      return sendStored(docKey(c, c.document.signed.stored), c.document.name.replace(/\.pdf$/i, "") + " - signed.pdf");
+    }
+    // The client fills in and signs the PDF in their browser; here we only receive the finished file and record who sent it
+    if (sub === "/document-upload-url" && method === "POST") {
+      if (!c.document) return fail(400, "There's no document to sign.");
+      if (c.document.signed) return fail(409, "This has already been signed.");
+      return uploadTarget(c, (await readJson(req)).size);
+    }
+    if (sub === "/document-upload" && method === "POST") {
+      if (!c.document) return fail(400, "There's no document to sign.");
+      if (c.document.signed) return fail(409, "This has already been signed.");
+      return rawUpload(req, c);
+    }
+    if (sub === "/document-sign" && method === "POST") {
+      if (!c.document) return fail(400, "There's no document to sign.");
+      if (c.document.signed) return fail(409, "This has already been signed.");
+      const b = await readJson(req);
+      const name = clip(b.name, 120);
+      if (name.length < 2) return fail(400, "Please type your full name to sign.");
+      if (b.agree !== true) return fail(400, "Please tick the box to confirm you agree.");
+      const chk = await checkUploadedPdf(c, b.stored);
+      if (chk.error) return chk.error;
+      const original = await files.get(docKey(c, c.document.stored));
+      c.document.signed = {
+        name, at: Date.now(), ip, ua: clip(hdr(req, "user-agent"), 300), stored: String(b.stored), size: chk.size,
+        originalHash: original ? sha(original) : "", signedHash: sha(chk.buf), // proves which exact files these were
+      };
+      c.lastActivity = Date.now();
+      await checkComplete(req, f, c);
+      await store.saveClient(c);
+      if (f.notify !== false) notify("documentSigned", { f, c, link: `${baseUrl(req)}/app` }, f.email);
+      return json(200, { ok: true });
+    }
     if (sub === "/messages" && method === "GET") return json(200, await store.messagesOf(c.id));
     if (sub === "/messages" && method === "POST") {
       const b = await readJson(req);

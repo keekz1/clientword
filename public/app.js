@@ -1,4 +1,5 @@
 import { el, api, toast, when, size, STATUS, inkFor, ago, initials, dateTime, money } from "/ui.js";
+import { pdfToWord, fetchBytes, saveFile } from "/pdfdoc.js";
 
 const root = document.getElementById("root");
 let me = null;
@@ -178,6 +179,7 @@ async function clientView(id) {
       el("div", {},
         el("div", { class: "card" }, el("h3", {}, "Their answers"), answers),
         contractCard(c, act),
+        documentCard(c, act),
         depositCard(c, act),
         el("div", { class: "card" }, el("h3", {}, "Files from them"), filesBox),
         linksCard(c, act),
@@ -232,6 +234,55 @@ function contractCard(c, act) {
   return card;
 }
 
+
+function documentCard(c, act) {
+  const d = c.document, base = `/api/clients/${c.id}`;
+  const card = el("div", { class: "card stack" }, el("h3", { style: "margin:0" }, "PDF to sign"));
+  const err = el("div", { class: "err", role: "alert" });
+  const word = el("button", { class: "btn ghost sm", type: "button" }, "Download as Word");
+  word.onclick = async () => {
+    err.textContent = ""; word.disabled = true; word.textContent = "Converting…";
+    try { saveFile(await pdfToWord(await fetchBytes(base + "/document/file"), d.name), d.name.replace(/\.pdf$/i, "") + ".docx"); }
+    catch (x) { err.textContent = x.message; } finally { word.disabled = false; word.textContent = "Download as Word"; }
+  };
+  if (d?.signed) {
+    card.append(el("strong", {}, d.name),
+      el("div", { class: "sigbox" },
+        el("div", { class: "ok-text" }, "✓ Signed by ", el("strong", {}, d.signed.name)), el("div", {}, dateTime(d.signed.at)),
+        el("div", { class: "hint" }, "From IP ", d.signed.ip),
+        el("div", { class: "hint" }, "Fingerprints (SHA-256) of the original and the signed file:"), el("code", {}, d.signed.originalHash), el("code", {}, d.signed.signedHash)),
+      el("div", { class: "doc-actions" }, el("a", { class: "btn sm", href: base + "/document/signed" }, "Download signed PDF"),
+        el("a", { class: "btn ghost sm", href: base + "/document/file" }, "Original PDF"), word), err);
+    return card;
+  }
+  const picker = el("input", { type: "file", accept: "application/pdf,.pdf", class: "sr", id: "doc-pick" });
+  const label = el("label", { class: "btn ghost sm", for: "doc-pick", style: "cursor:pointer" }, d ? "Replace PDF" : "Upload a PDF");
+  picker.onchange = async () => {
+    const file = picker.files[0]; if (!file) return;
+    err.textContent = "";
+    if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") { err.textContent = "Please choose a PDF file."; return; }
+    label.textContent = "Uploading…";
+    try {
+      const t = await api(base + "/document/upload-url", { method: "POST", body: { size: file.size } });
+      let stored;
+      if (t.mode === "direct") {
+        let put; try { put = await fetch(t.url, { method: "PUT", body: file, headers: t.headers || {} }); } catch { throw new Error("The upload didn't complete. Please try again."); }
+        if (!put.ok) throw new Error("The upload didn't complete. Please try again.");
+        stored = t.stored;
+      } else stored = (await api(base + "/document/upload", { method: "POST", body: file })).stored;
+      await api(base + "/document/done", { method: "POST", body: { stored, name: file.name } });
+      toast("Document added"); act(async () => {});
+    } catch (x) { err.textContent = x.message; label.textContent = d ? "Replace PDF" : "Upload a PDF"; }
+  };
+  if (!d) {
+    card.append(el("p", { class: "muted", style: "margin:0" }, "Upload a contract, form or quote as a PDF. Your client can fill it in and sign it on their page, on any device, then you get the signed PDF back."), picker, el("div", {}, label), err);
+  } else {
+    card.append(el("strong", {}, d.name), el("p", { class: "hint", style: "margin:0" }, "Waiting for your client to fill in and sign."),
+      el("div", { class: "doc-actions" }, picker, label, el("a", { class: "btn ghost sm", href: base + "/document/file" }, "Download"), word,
+        el("button", { class: "btn danger sm", type: "button", onclick: () => confirmBox("Remove this document?") && act(() => api(base + "/document", { method: "DELETE" }), "Removed") }, "Remove")), err);
+  }
+  return card;
+}
 
 function depositCard(c, act) {
   const card = el("div", { class: "card stack" }, el("h3", { style: "margin:0" }, "Deposit"));

@@ -50,11 +50,11 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
-      # Clients' browsers upload straight to the bucket, so it must allow PUT from your site (and only your site)
+      # Browsers upload straight to the bucket (PUT) and read PDFs from it to fill in and convert them (GET), from your site only
       CorsConfiguration:
         CorsRules:
           - AllowedOrigins: [!Ref AppUrl]
-            AllowedMethods: [PUT]
+            AllowedMethods: [PUT, GET]
             AllowedHeaders: ["*"]
             MaxAge: 3000
 

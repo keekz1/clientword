@@ -5,6 +5,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { createApp } from "./server.mjs";
 import { loadConfig, checkProduction } from "./config.mjs";
 import { createLocalStore } from "./store-local.mjs";
@@ -353,6 +354,62 @@ console.log("\nServerless path (web handler, fake S3, DynamoDB limiter)");
   r = await call("PUT", "/api/settings", { welcome: "Hi" }, { origin: "https://evil.example", host: "internal.amplify.local" });
   assert.equal(r.status, 403); ok("origin check accepts APP_URL, rejects other sites");
   assert.equal((await handle(new Request("https://clientword.example/anything"))).status, 404); ok("non-API paths are not handled by the API");
+}
+
+// ---- PDF documents: attach, sign, replace/removal rules, cleanup ----
+console.log("\nPDF documents");
+{
+  const ok = (msg) => console.log(`  ✓ ${++total}. ${msg}`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cw-doc-"));
+  const config = loadConfig({ PORTAL_DATA: dir });
+  const files = createLocalFiles(dir), mailer = createMailer(config);
+  const handle = createHandler({ config, store: createLocalStore(dir), files, mailer, limiter: createMemoryLimiter() });
+  let cookie = "";
+  const call = async (method, p, body, { raw } = {}) => {
+    const r = await handle(new Request("http://localhost" + p, { method, headers: { ...(body !== undefined && !raw ? { "content-type": "application/json" } : {}), ...(cookie ? { cookie } : {}) }, body: body === undefined ? undefined : raw ? body : JSON.stringify(body) }));
+    const sc = r.headers.get("set-cookie"); if (sc) cookie = sc.split(";")[0];
+    const buf = Buffer.from(await r.arrayBuffer()); let data; try { data = JSON.parse(buf.toString()); } catch { data = buf; }
+    return { status: r.status, data, headers: r.headers };
+  };
+  const pdf = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n");
+  const signedPdf = Buffer.from("%PDF-1.4\nsigned version\n%%EOF\n");
+  await call("POST", "/api/auth/signup", { name: "Dee", email: "dee@example.com", password: "longenough1" });
+  const c = (await call("POST", "/api/clients", { name: "Cal" })).data;
+  const token = (await call("GET", "/api/clients/" + c.id)).data.token, P = "/api/portal/" + token;
+  const attach = async (buf, name = "a.pdf") => { const up = await call("POST", `/api/clients/${c.id}/document/upload`, buf, { raw: true }); return call("POST", `/api/clients/${c.id}/document/done`, { stored: up.data.stored, name }); };
+
+  let r = await attach(Buffer.from("just some text, not a pdf"));
+  assert.equal(r.status, 400); assert.equal(files._count(), 0); ok("a file that isn't a PDF is refused and removed, whatever it's called");
+  r = await attach(pdf, "../Deal.pdf");
+  assert.equal(r.status, 200); assert.equal(r.data.hasDocument, true); assert.equal(r.data.documentSigned, false);
+  const detail = (await call("GET", "/api/clients/" + c.id)).data;
+  assert.ok(!detail.document.name.includes("/")); assert.ok(detail.steps.some((s) => s.key === "document" && !s.done)); ok("document attached as a step the client must complete");
+  const first = files._count();
+  assert.equal((await attach(pdf, "v2.pdf")).status, 200); assert.equal(files._count(), first); ok("replacing an unsigned document deletes the old file");
+  assert.equal((await call("GET", P)).data.document.name, "v2.pdf"); ok("client sees the document");
+  assert.deepEqual((await call("GET", P + "/document-file")).data, pdf); ok("client can download the original");
+  assert.equal((await call("GET", P + "/document-signed")).status, 404); ok("no signed copy before signing");
+
+  let up = await call("POST", P + "/document-upload", signedPdf, { raw: true });
+  assert.equal((await call("POST", P + "/document-sign", { stored: up.data.stored, name: "C", agree: true })).status, 400);
+  assert.equal((await call("POST", P + "/document-sign", { stored: up.data.stored, name: "Cal Jones", agree: false })).status, 400); ok("signing needs a full name and the tick box");
+  const fake = await call("POST", P + "/document-upload", Buffer.from("nope nope nope nope"), { raw: true });
+  assert.equal((await call("POST", P + "/document-sign", { stored: fake.data.stored, name: "Cal Jones", agree: true })).status, 400); ok("a non-PDF can't be submitted as the signed copy");
+  assert.equal((await call("POST", P + "/document-sign", { stored: "../../x", name: "Cal Jones", agree: true })).status, 400); ok("storage keys are validated");
+  r = await call("POST", P + "/document-sign", { stored: up.data.stored, name: "Cal Jones", agree: true });
+  assert.equal(r.status, 200);
+  assert.ok(mailer.outbox.some((m) => /signed/.test(m.subject) && /v2\.pdf/.test(m.subject))); ok("signing is recorded and the freelancer is emailed");
+  const after = (await call("GET", "/api/clients/" + c.id)).data;
+  const sg = after.document.signed;
+  const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
+  assert.equal(sg.originalHash, sha(pdf)); assert.equal(sg.signedHash, sha(signedPdf)); assert.equal(sg.name, "Cal Jones"); assert.ok(sg.ip && sg.at); ok("record holds who, when, IP and SHA-256 of both the original and the signed file");
+  assert.deepEqual((await call("GET", P + "/document-signed")).data, signedPdf);
+  assert.deepEqual((await call("GET", `/api/clients/${c.id}/document/signed`)).data, signedPdf); ok("both sides can download the signed PDF");
+  assert.equal((await call("POST", P + "/document-upload-url", { size: 10 })).status, 409);
+  assert.equal((await attach(pdf)).status, 409);
+  assert.equal((await call("POST", P + "/document-sign", { stored: up.data.stored, name: "Cal Jones", agree: true })).status, 409); ok("a signed document can't be re-signed or replaced");
+  assert.equal(after.status, "in_progress"); assert.ok(after.steps.find((s) => s.key === "document").done); ok("the document step counts as done once signed");
+  assert.equal((await call("DELETE", "/api/clients/" + c.id)).status, 200); assert.equal(files._count(), 0); ok("deleting the client removes the original and signed PDFs");
 }
 
 console.log("\nConfig checks");

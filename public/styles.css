@@ -190,3 +190,32 @@ footer.site{border-top:1px solid var(--line);padding:24px 0 40px;color:var(--mut
 .deposit-box .amt{font-size:1.8rem;font-weight:800;letter-spacing:-.02em}
 .deposit-box pre{white-space:pre-wrap;font:inherit;margin:8px 0 0;overflow-wrap:anywhere}
 .empty h2{color:var(--ink)}
+
+/* ----- PDF fill-in and sign editor ----- */
+body.ed-open{overflow:hidden}
+.pdf-ed{position:fixed;inset:0;z-index:30;background:var(--bg);display:flex;flex-direction:column}
+.ed-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 14px;background:var(--card);border-bottom:1px solid var(--line)}
+.ed-bar .grow{flex:1}
+.ed-title{max-width:30ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:6px}
+.ed-bar .btn[aria-pressed=true]{background:var(--brand);color:var(--brand-ink);border-color:var(--brand)}
+.ed-hint{padding:6px 14px;font-size:.875rem;color:var(--muted);background:var(--grey-bg)}
+.ed-hint.warn{color:var(--warn);background:var(--warn-bg)}
+.ed-scroll{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;align-items:center;gap:12px;-webkit-overflow-scrolling:touch}
+.ed-scroll.placing{cursor:crosshair}
+.ed-wrap{position:relative;background:#fff;box-shadow:var(--shadow);flex:none;max-width:100%}
+.ed-page{display:block;position:absolute;inset:0}
+.ed-layer{position:absolute;inset:0;touch-action:pan-y}
+.ed-scroll.placing .ed-layer{touch-action:none}
+.ed-item{position:absolute;outline:1px dashed transparent;touch-action:none;cursor:move}
+.ed-item.sel{outline-color:var(--brand)}
+.ed-item.text input{font:inherit;color:#1b2a6b;background:rgba(79,70,229,.07);border:0;border-radius:2px;padding:0 2px;line-height:1.3;height:1.3em;min-width:3ch;max-width:none;box-shadow:none}
+.ed-item.text input:focus{box-shadow:none;background:rgba(79,70,229,.14)}
+.ed-item.sig img{width:100%;height:100%;display:block;pointer-events:none;user-select:none}
+.ed-item.tick svg{display:block;pointer-events:none}
+.ed-handle{position:absolute;right:-8px;bottom:-8px;width:18px;height:18px;border-radius:50%;background:var(--brand);border:2px solid #fff;cursor:nwse-resize;display:none;touch-action:none}
+.ed-item.sel .ed-handle{display:block}
+.ed-top{z-index:60}
+.sig-canvas{width:100%;height:auto;aspect-ratio:760/220;border:1px dashed var(--line);border-radius:8px;background:#fff;touch-action:none}
+.sig-canvas.draw{cursor:crosshair}
+.doc-actions{display:flex;flex-wrap:wrap;gap:8px}
+[hidden]{display:none!important}
