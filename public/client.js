@@ -1,9 +1,11 @@
-import { el, api, size, inkFor, toast } from "/ui.js";
+import { el, api, size, inkFor, toast, ago, dateTime } from "/ui.js";
 
 const root = document.getElementById("root");
 const tok = location.pathname.split("/")[2];
 const base = "/api/portal/" + tok;
 let data;
+let draftMsg = ""; // keep half-typed text when the page refreshes itself
+let refreshThread = null;
 
 async function load() {
   try { data = await api(base); }
@@ -22,7 +24,8 @@ function render() {
 
   const done = steps.filter((s) => s.done).length;
   const all = steps.length && done === steps.length;
-  const sections = steps.map((s, i) => ({ intake: intakeStep, files: filesStep, meeting: meetingStep })[s.key](s, i + 1));
+  const builders = { intake: intakeStep, contract: contractStep, files: filesStep, meeting: meetingStep };
+  const sections = steps.map((s, i) => builders[s.key](s, i + 1));
 
   root.replaceChildren(
     el("header", { class: "portal-top" }, el("div", { class: "in" },
@@ -33,7 +36,9 @@ function render() {
       steps.length ? el("div", { class: "progress", role: "img", "aria-label": `${done} of ${steps.length} steps done` }, steps.map((s) => el("div", { class: s.done ? "done" : "" }))) : null,
       all ? el("div", { class: "card finish step" }, el("div", { class: "big" }, "🎉"), el("h2", {}, "You're all set"), el("p", { class: "muted", style: "margin:0" }, `${brand.name} has everything needed and will be in touch. You can come back to this page any time to add more.`)) : null,
       !steps.length ? el("div", { class: "card finish" }, el("p", { style: "margin:0" }, `Nothing to do here yet. ${brand.name} will be in touch.`)) : null,
-      sections));
+      sections,
+      messagesBox(),
+      el("p", { class: "powered" }, "This page is private to you. Please don't share the link.")));
 }
 
 function stepShell(s, n, body) {
@@ -41,7 +46,7 @@ function stepShell(s, n, body) {
     el("header", {}, el("span", { class: "num" }, s.done ? "✓" : n), el("h2", {}, s.label)), body);
 }
 
-// ----- 1. intake form -----
+// ----- intake form -----
 function intakeStep(s, n) {
   const { questions } = data.brand;
   const saved = data.intake?.answers || {};
@@ -67,7 +72,32 @@ function intakeStep(s, n) {
   return stepShell(s, n, form);
 }
 
-// ----- 2. files -----
+// ----- contract -----
+function contractStep(s, n) {
+  const k = data.contract;
+  if (k.signed) {
+    return stepShell(s, n, el("div", { class: "stack" },
+      el("strong", {}, k.title),
+      el("div", { class: "sign-text" }, k.body),
+      el("p", { class: "ok-text", style: "margin:0" }, `✓ Signed by ${k.signed.name} on ${dateTime(k.signed.at)}`)));
+  }
+  const err = el("div", { class: "err", role: "alert" });
+  const name = el("input", { type: "text", id: "sig", class: "sig-input", autocomplete: "name", placeholder: "Type your full name" });
+  const agree = el("input", { type: "checkbox", id: "agree" });
+  const btn = el("button", { class: "btn", type: "submit" }, "Sign agreement");
+  return stepShell(s, n, el("form", { class: "stack", novalidate: true, onsubmit: async (e) => {
+    e.preventDefault(); err.textContent = ""; btn.disabled = true;
+    try { await api(base + "/sign", { method: "POST", body: { name: name.value, agree: agree.checked } }); await load(); toast("Signed. Thank you"); }
+    catch (x) { err.textContent = x.message; btn.disabled = false; }
+  } },
+    el("strong", {}, k.title),
+    el("div", { class: "sign-text", tabIndex: 0, role: "region", "aria-label": "Contract text" }, k.body),
+    el("label", { class: "check", for: "agree" }, agree, "I have read this agreement and I agree to it."),
+    el("div", {}, el("label", { for: "sig" }, "Type your full name as your signature"), name),
+    err, btn));
+}
+
+// ----- files -----
 function filesStep(s, n) {
   const err = el("div", { class: "err", role: "alert" });
   const picker = el("input", { type: "file", multiple: true, class: "sr", id: "picker", onchange: () => upload([...picker.files]) });
@@ -92,11 +122,11 @@ function filesStep(s, n) {
   return stepShell(s, n, el("div", {}, picker, drop, err, list, skip));
 }
 
-// ----- 3. meeting -----
+// ----- meeting -----
 function meetingStep(s, n) {
   const { brand } = data;
   const err = el("div", { class: "err", role: "alert" });
-  const when = el("input", { type: "text", id: "when", placeholder: "e.g. Tuesday 4 Nov, 2:30pm", value: data.meeting?.when || "", "aria-label": "When did you book?" });
+  const when = el("input", { type: "text", id: "when", placeholder: "e.g. Tuesday 4 Nov, 2:30pm", value: data.meeting?.when || "" });
   const form = el("form", { class: "stack", novalidate: true, onsubmit: async (e) => {
     e.preventDefault(); err.textContent = "";
     try { await api(base + "/meeting", { method: "POST", body: { when: when.value } }); await load(); toast("Thanks, noted"); }
@@ -109,5 +139,31 @@ function meetingStep(s, n) {
     el("a", { class: "btn", href: brand.meetingUrl, target: "_blank", rel: "noopener noreferrer" }, "Open booking page ↗"),
     form));
 }
+
+// ----- messages -----
+function messagesBox() {
+  const thread = el("div", { class: "thread", "aria-live": "polite" });
+  const input = el("textarea", { placeholder: `Message ${data.brand.name.split(" ")[0]}…`, "aria-label": "Message", maxLength: 2000, rows: 1, oninput: (e) => (draftMsg = e.target.value) });
+  input.value = draftMsg;
+  const send = el("button", { class: "btn", type: "button" }, "Send");
+  const paint = (msgs) => {
+    thread.replaceChildren(...(msgs.length ? msgs.map((m) => el("div", { class: "bubble " + (m.from === "client" ? "me" : "them") }, m.text, el("small", {}, ago(m.at)))) : [el("p", { class: "muted small", style: "margin:0" }, "Questions? Send a message here.")]));
+    thread.scrollTop = thread.scrollHeight;
+  };
+  const refresh = () => api(base + "/messages").then(paint).catch(() => {});
+  send.onclick = async () => {
+    const text = input.value.trim(); if (!text) return;
+    send.disabled = true;
+    try { await api(base + "/messages", { method: "POST", body: { text } }); input.value = ""; draftMsg = ""; await refresh(); }
+    catch (x) { toast(x.message); }
+    send.disabled = false;
+  };
+  refreshThread = refresh;
+  refresh();
+  return el("section", { class: "card step" }, el("header", {}, el("h2", {}, "Messages")), thread, el("div", { class: "msgbox" }, input, send));
+}
+
+// Pull in new messages when the client returns to the tab (only the thread, so typed answers are never reset)
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && refreshThread) refreshThread(); });
 
 load();

@@ -2,57 +2,96 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Clientword: client onboarding for freelancers</title>
+<meta name="description" content="Send one private link. Your client answers your questions, signs your contract, shares files and books a call. All on a page with your branding.">
+<meta name="theme-color" content="#4f46e5">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/styles.css">
 </head><body>
-<main class="landing">
-  <section>
-    <h1>Onboard clients like an agency, not a group chat.</h1>
-    <p class="lead">Send one link. Your client tells you about their project, shares files and books a call, all on a page with your branding.</p>
-    <ul class="ticks">
-      <li>Your own intake questions, ready in minutes</li>
-      <li>Files and answers kept in one place per client</li>
-      <li>Book a call through your own Google Meet, Zoom or Calendly</li>
-      <li>See at a glance who has finished and who needs a nudge</li>
-    </ul>
-  </section>
-  <section class="card" aria-label="Account">
-    <div class="tabs" role="tablist">
-      <button role="tab" id="t-signup" aria-selected="true">Create account</button>
-      <button role="tab" id="t-login" aria-selected="false">Log in</button>
+<header class="topbar"><div class="in">
+  <a class="brandmark" href="/"><img src="/favicon.svg" alt="" width="26" height="26"><span class="wm">Client<span>word</span></span></a>
+  <nav aria-label="Main">
+    <a class="hide-sm" href="#how">How it works</a><a class="hide-sm" href="#features">Features</a><a class="hide-sm" href="#faq">FAQ</a>
+    <a href="#start" id="nav-login">Log in</a>
+  </nav>
+</div></header>
+
+<main>
+<div class="wrap">
+  <section class="hero">
+    <div>
+      <h1>Onboard clients like an agency, not a group chat.</h1>
+      <p class="lead">Send one private link. Your client answers your questions, signs your contract, shares files and books a call, on a page with your branding. You see it all in one place.</p>
+      <ul class="ticks">
+        <li>Your own intake questions, ready in minutes</li>
+        <li>Contracts signed online, with a record of what was agreed</li>
+        <li>Booking through your own Calendly, Cal.com or Google Calendar</li>
+        <li>Email reminders for clients who stall</li>
+      </ul>
     </div>
-    <form id="form" class="stack" novalidate>
-      <div data-only="signup"><label for="name">Your name</label><input id="name" type="text" autocomplete="name"></div>
-      <div data-only="signup"><label for="business">Business name <span class="muted">(optional)</span></label><input id="business" type="text" autocomplete="organization"></div>
-      <div><label for="email">Email</label><input id="email" type="email" autocomplete="email"></div>
-      <div><label for="password">Password</label><input id="password" type="password" autocomplete="current-password"></div>
-      <button class="btn" id="go" type="submit" style="width:100%">Create account</button>
-      <div class="err" id="err" role="alert"></div>
-    </form>
+    <section class="card" id="start" aria-label="Account">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="t-signup" aria-selected="true">Create account</button>
+        <button role="tab" id="t-login" aria-selected="false">Log in</button>
+      </div>
+      <form id="form" class="stack" novalidate>
+        <div data-only="signup"><label for="name">Your name</label><input id="name" type="text" autocomplete="name"></div>
+        <div data-only="signup"><label for="business">Business name <span class="muted">(optional)</span></label><input id="business" type="text" autocomplete="organization"></div>
+        <div><label for="email">Email</label><input id="email" type="email" autocomplete="email"></div>
+        <div><label for="password">Password</label>
+          <div class="pw-row"><input id="password" type="password" autocomplete="current-password"><button type="button" id="showpw" aria-pressed="false">Show</button></div></div>
+        <button class="btn" id="go" type="submit" style="width:100%">Create account</button>
+        <div class="err" id="err" role="alert"></div>
+        <div class="small muted" id="forgot-row" hidden><button type="button" class="linklike" id="forgot">Forgot your password?</button></div>
+        <div class="msg-ok" id="ok" role="status"></div>
+      </form>
+    </section>
   </section>
+
+  <div class="mock" aria-hidden="true">
+    <div class="bar-top"><i></i><i></i><i></i></div>
+    <div class="hd"><span style="opacity:.9;font-weight:600">Ada Design</span><b>Welcome, Grace</b><span style="opacity:.9">Three quick steps and we're ready to start.</span></div>
+    <div class="bd">
+      <div class="st done"><b>✓ Your project</b>Answers saved</div>
+      <div class="st"><b>2 Review and sign</b>Service agreement</div>
+      <div class="st"><b>3 Book a call</b>Pick a time</div>
+    </div>
+  </div>
+
+  <section class="section" id="how">
+    <h2>From "yes" to "let's start" in three steps</h2>
+    <p class="sub">No more chasing answers across email, WhatsApp and attachments.</p>
+    <div class="three">
+      <div class="card tile"><div class="ico">1</div><h3>Set up once</h3><p>Add your logo colour, your questions, your contract and your booking link. It takes about ten minutes.</p></div>
+      <div class="card tile"><div class="ico">2</div><h3>Send a private link</h3><p>Add a client and email them their page, or copy the link into your own message.</p></div>
+      <div class="card tile"><div class="ico">3</div><h3>Get everything back</h3><p>Answers, files, a signed contract and a booked call land in one place. You're told when they finish.</p></div>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <h2>Everything a good first impression needs</h2>
+    <p class="sub">Simple on purpose. Your clients don't need accounts or passwords.</p>
+    <div class="feat">
+      <div class="card tile"><div class="ico">✎</div><h3>Your questions</h3><p>Short answers, long answers or multiple choice. Mark what's required.</p></div>
+      <div class="card tile"><div class="ico">✍</div><h3>Contracts with e-sign</h3><p>Clients sign by typing their name. You keep the time, the exact text and a fingerprint of it.</p></div>
+      <div class="card tile"><div class="ico">📎</div><h3>File sharing</h3><p>Briefs, logos and documents up to 10 MB each, stored securely.</p></div>
+      <div class="card tile"><div class="ico">📅</div><h3>Booking</h3><p>Send clients to your own booking page. Works with Calendly, Cal.com and others.</p></div>
+      <div class="card tile"><div class="ico">💬</div><h3>Messages</h3><p>A simple thread on every client, so conversations stay with the project.</p></div>
+      <div class="card tile"><div class="ico">🔔</div><h3>Nudges</h3><p>Email notifications for you, and polite reminders for clients who haven't finished.</p></div>
+    </div>
+  </section>
+
+  <section class="section" id="faq">
+    <h2>Questions</h2>
+    <details class="faq"><summary>Do my clients need an account?</summary><p>No. Each client gets a private link. Anyone with the link can fill in that page, so send it only to them.</p></details>
+    <details class="faq"><summary>Is a typed signature valid?</summary><p>A typed name with a timestamp and a record of exactly what was agreed is a simple electronic signature, which is accepted for many everyday agreements. For high-value or regulated contracts, check with a solicitor.</p></details>
+    <details class="faq"><summary>Where is my data kept?</summary><p>On Amazon Web Services, encrypted at rest. Deleting a client removes their answers, files and messages.</p></details>
+    <details class="faq"><summary>Can I use my own booking tool?</summary><p>Yes. Paste your Calendly, Cal.com or Google Calendar booking link and clients are sent there.</p></details>
+    <details class="faq"><summary>What does it cost?</summary><p>It's free while we're in beta.</p></details>
+  </section>
+
+  <section class="cta"><h2>Make your next client feel looked after</h2><p>Set up your page in minutes.</p><a class="btn lg" href="#start">Create your free account</a></section>
+</div>
 </main>
-<script type="module">
-import { api } from "/ui.js";
-let mode = "signup";
-const $ = (id) => document.getElementById(id);
-function setMode(m) {
-  mode = m;
-  $("t-signup").setAttribute("aria-selected", m === "signup");
-  $("t-login").setAttribute("aria-selected", m === "login");
-  document.querySelectorAll("[data-only=signup]").forEach((d) => (d.hidden = m !== "signup"));
-  $("go").textContent = m === "signup" ? "Create account" : "Log in";
-  $("password").autocomplete = m === "signup" ? "new-password" : "current-password";
-  $("err").textContent = "";
-}
-$("t-signup").onclick = () => setMode("signup");
-$("t-login").onclick = () => setMode("login");
-$("form").onsubmit = async (e) => {
-  e.preventDefault();
-  $("go").disabled = true; $("err").textContent = "";
-  try {
-    await api("/api/auth/" + mode, { method: "POST", body: { name: $("name").value, business: $("business").value, email: $("email").value, password: $("password").value } });
-    location.href = "/app";
-  } catch (x) { $("err").textContent = x.message; $("go").disabled = false; }
-};
-api("/api/me").then(() => (location.href = "/app")).catch(() => {});
-</script>
+<footer class="site"><div class="wrap">Clientword · Client onboarding for freelancers</div></footer>
+<script type="module" src="/index.js"></script>
 </body></html>

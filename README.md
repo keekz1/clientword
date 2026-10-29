@@ -1,10 +1,23 @@
 # Clientword
 
-Freelancer signs up, sets branding, intake questions and a booking link, adds a client and sends them a private link.
-The client answers questions, uploads files and books a call. The freelancer sees everything per client.
+Client onboarding for freelancers. A freelancer sets their branding, questions, contract and booking link,
+then sends each client a private link. The client answers questions, signs the contract, uploads files,
+books a call and can message back. The freelancer sees everything in one dashboard and gets emailed when a client finishes.
 
-    node server.mjs        # http://localhost:3000  (Node 20+, no packages)
-    node test.mjs          # 29 API checks
+## Run locally (no AWS, no installs)
+    node server.mjs        # http://localhost:3000 (Node 20+)
+    node test.mjs          # 110 checks on both storage back ends
 
-All data access goes through `store.mjs`. For AWS: replace it with DynamoDB (+ S3 for uploads),
-swap login for Cognito, and send "your client finished" emails via SES.
+Locally, data is a JSON file in `data/` and emails are printed to the console.
+
+## Layout
+| File | What it does |
+|---|---|
+| `server.mjs` | All routes, security headers, rate limits |
+| `store-local.mjs` / `store-dynamo.mjs` | Same storage interface: JSON file for dev, DynamoDB for AWS |
+| `dynamo-adapter.mjs`, `files.mjs`, `mail.mjs` | Thin AWS SDK wrappers (DynamoDB, S3, SES) |
+| `config.mjs` | Environment settings, and refuses unsafe production config |
+| `public/` | Landing page, dashboard, client page (plain JS, no build step) |
+| `infra/template.yaml`, `Dockerfile` | AWS deployment |
+
+See `DEPLOY.md` to put it on AWS.

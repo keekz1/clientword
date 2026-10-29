@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Clientword - DynamoDB table, S3 bucket, IAM roles and an App Runner service
+
+Parameters:
+  ImageUri:
+    Type: String
+    Description: ECR image to run, e.g. 123456789012.dkr.ecr.eu-west-2.amazonaws.com/clientword:latest
+  AppUrl:
+    Type: String
+    Description: Public https address users will visit (custom domain or the App Runner URL), no trailing slash
+  MailFrom:
+    Type: String
+    Description: Verified SES sender, e.g. "Clientword <hello@yourdomain.co.uk>"
+  CronSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 24
+    Description: Long random string that protects the reminders endpoint
+
+Resources:
+  Table:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Lets App Runner pull the image from your private ECR repository
+  AccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: build.apprunner.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+  # What the running app is allowed to do: only its own table, bucket and sending email
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: tasks.apprunner.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: clientword-app
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:Query, dynamodb:Scan]
+                Resource: !GetAtt Table.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub "${Bucket.Arn}/*"
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: "*"
+
+  Service:
+    Type: AWS::AppRunner::Service
+    Properties:
+      ServiceName: clientword
+      SourceConfiguration:
+        AuthenticationConfiguration: { AccessRoleArn: !GetAtt AccessRole.Arn }
+        AutoDeploymentsEnabled: false
+        ImageRepository:
+          ImageIdentifier: !Ref ImageUri
+          ImageRepositoryType: ECR
+          ImageConfiguration:
+            Port: "8080"
+            RuntimeEnvironmentVariables:
+              - { Name: NODE_ENV, Value: production }
+              - { Name: STORE, Value: dynamo }
+              - { Name: TABLE_NAME, Value: !Ref Table }
+              - { Name: BUCKET, Value: !Ref Bucket }
+              - { Name: MAIL, Value: ses }
+              - { Name: MAIL_FROM, Value: !Ref MailFrom }
+              - { Name: APP_URL, Value: !Ref AppUrl }
+              - { Name: TRUST_PROXY, Value: "1" }
+              - { Name: CRON_SECRET, Value: !Ref CronSecret }
+      InstanceConfiguration:
+        Cpu: 0.25 vCPU
+        Memory: 0.5 GB
+        InstanceRoleArn: !GetAtt InstanceRole.Arn
+      HealthCheckConfiguration:
+        Protocol: HTTP
+        Path: /healthz
+
+Outputs:
+  ServiceUrl:
+    Value: !GetAtt Service.ServiceUrl
+  TableName:
+    Value: !Ref Table
+  BucketName:
+    Value: !Ref Bucket
