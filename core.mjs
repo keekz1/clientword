@@ -30,6 +30,7 @@ const DEFAULT_CONTRACT = { title: "Service agreement", body: "" };
 const rid = () => crypto.randomBytes(8).toString("hex");
 const secret = () => crypto.randomBytes(24).toString("base64url");
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 const clip = (v, n) => String(v ?? "").trim().slice(0, n);
 const validEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e) && e.length <= 200;
 const validColour = (c) => /^#[0-9a-fA-F]{6}$/.test(c);
@@ -168,6 +169,24 @@ export function createHandler({ config, store, files, mailer, limiter }) {
   // Emails to a freelancer's clients go out only from verified accounts, within a daily cap
   const clientMailBlock = async (f) => !f.emailVerified ? "Please confirm your own email first. We've sent you a link, and you can resend it from the dashboard." : (await limited("clientmail:" + f.id, CLIENT_MAILS_PER_DAY, 86400_000)) ? "You've reached today's email limit. Try again tomorrow." : null;
 
+  // A printable copy of a signed agreement: the text plus who signed it, when, and the fingerprint of the exact text
+  function signedCopy(f, c) {
+    const k = c.contract, sg = k?.signed;
+    if (!sg) return null;
+    const when = new Date(sg.at).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(k.title)} - signed copy</title>
+<style>body{font:16px/1.55 Georgia,serif;color:#111;max-width:720px;margin:32px auto;padding:0 20px}h1{font-size:1.5rem}.meta{color:#555;font:14px Arial,sans-serif}pre{white-space:pre-wrap;font:inherit;border-top:1px solid #ccc;border-bottom:1px solid #ccc;padding:16px 0}.sig{font:14px Arial,sans-serif;background:#f4f5f7;border-radius:8px;padding:14px 16px}code{word-break:break-all;font-size:12px}@media print{.noprint{display:none}}</style></head><body>
+<p class="meta noprint">To keep a PDF, use your browser's Print command and choose "Save as PDF".</p>
+<h1>${esc(k.title)}</h1><p class="meta">Between ${esc(f.business)} and ${esc(c.name)}</p>
+<pre>${esc(k.body)}</pre>
+<div class="sig"><strong>Electronically signed by ${esc(sg.name)}</strong><br>${esc(when)}<br>From IP address ${esc(sg.ip)}<br>SHA-256 of the agreement text above:<br><code>${esc(sg.hash)}</code></div>
+</body></html>`;
+    return new Response(html, { status: 200, headers: {
+      "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+    } });
+  }
+
   // ---------- API ----------
   async function api(req, url, socketIp) {
     const p = url.pathname;
@@ -303,6 +322,18 @@ export function createHandler({ config, store, files, mailer, limiter }) {
       return json(200, { ok: true }, { "set-cookie": sessionCookie("", 0) });
     }
 
+    if (p === "/api/account/password" && method === "POST") {
+      if (await limited("pw:" + f.id, 5, 3600_000)) return fail(429, "Too many attempts. Try again later.");
+      const b = await readJson(req);
+      if (!(await checkPassword(String(b.current || "").slice(0, 200), f.password))) return fail(403, "Your current password is not correct.");
+      const pw = String(b.next || "");
+      if (pw.length < 8 || pw.length > 200) return fail(400, "New password must be 8 to 200 characters.");
+      f.password = await hashPassword(pw);
+      f.passwordChangedAt = Date.now(); // signs out every other device
+      await store.saveFreelancer(f);
+      return json(200, { ok: true }, await startSession(f)); // keep this device signed in
+    }
+
     if (p === "/api/me" && method === "GET") return json(200, { email: f.email, verified: !!f.emailVerified, currency: f.currency || "GBP", payInstructions: f.payInstructions || "", notify: f.notify !== false, contractTemplate: f.contractTemplate || DEFAULT_CONTRACT, ...brand(f) });
 
     if (p === "/api/settings" && method === "PUT") {
@@ -392,6 +423,7 @@ export function createHandler({ config, store, files, mailer, limiter }) {
       } });
     }
 
+    if (sub === "contract" && subId === "record" && method === "GET") return signedCopy(f, c) || fail(404, "This contract hasn't been signed yet.");
     if (sub === "contract" && method === "PUT") {
       if (c.contract?.signed) return fail(409, "This contract is already signed and can't be changed.");
       const b = await readJson(req);
@@ -618,6 +650,7 @@ export function createHandler({ config, store, files, mailer, limiter }) {
       }
       return json(200, { ok: true });
     }
+    if (sub === "/contract-copy" && method === "GET") return signedCopy(f, c) || fail(404, "This contract hasn't been signed yet.");
     if (sub === "/messages" && method === "GET") return json(200, await store.messagesOf(c.id));
     if (sub === "/messages" && method === "POST") {
       const b = await readJson(req);

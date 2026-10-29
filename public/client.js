@@ -39,7 +39,7 @@ function render() {
       sections,
       linksBox(),
       messagesBox(),
-      el("p", { class: "powered" }, "This page is private to you. Please don't share the link.")));
+      el("p", { class: "powered" }, "This page is private to you. Please don't share the link. ", el("a", { href: "/privacy" }, "Privacy"))));
 }
 
 function stepShell(s, n, body) {
@@ -80,7 +80,8 @@ function contractStep(s, n) {
     return stepShell(s, n, el("div", { class: "stack" },
       el("strong", {}, k.title),
       el("div", { class: "sign-text" }, k.body),
-      el("p", { class: "ok-text", style: "margin:0" }, `✓ Signed by ${k.signed.name} on ${dateTime(k.signed.at)}`)));
+      el("p", { class: "ok-text", style: "margin:0" }, `✓ Signed by ${k.signed.name} on ${dateTime(k.signed.at)}`),
+      el("a", { href: base + "/contract-copy", target: "_blank", rel: "noopener", class: "small" }, "Open a printable copy of the signed agreement")));
   }
   const err = el("div", { class: "err", role: "alert" });
   const name = el("input", { type: "text", id: "sig", class: "sig-input", autocomplete: "name", placeholder: "Type your full name" });

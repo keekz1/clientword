@@ -24,6 +24,8 @@ export default {
       { source: "/app", destination: "/app.html" },
       { source: "/reset", destination: "/reset.html" },
       { source: "/verify", destination: "/verify.html" },
+      { source: "/privacy", destination: "/privacy.html" },
+      { source: "/terms", destination: "/terms.html" },
       { source: "/c/:token", destination: "/client.html" },
     ];
   },

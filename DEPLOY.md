@@ -72,4 +72,4 @@ Amplify hosting, DynamoDB on-demand, S3 and SES are all pay-per-use. At small sc
   The cap is `MAX_UPLOAD` in `core.mjs`; raising it is safe now that files go straight to S3.
 - A client who starts an upload and never finishes leaves an unused object in the bucket. Harmless at this scale; add an S3 lifecycle rule later if it ever matters.
 - Sessions last 14 days and live in DynamoDB, so deploys don't log anyone out.
-- Not yet done: privacy policy and terms pages, solicitor review of the e-sign wording, Stripe payments.
+- Before launch: fill in the [BRACKETED] placeholders in `public/privacy.html` and `public/terms.html` (company name, address, contact email, dates, region) and have a solicitor review them and the e-sign wording. Stripe payments are not built.

@@ -205,7 +205,8 @@ function contractCard(c, act) {
         el("div", { class: "ok-text" }, "✓ Signed by ", el("strong", {}, signed.name)),
         el("div", {}, dateTime(signed.at)),
         el("div", { class: "hint" }, "From IP ", signed.ip),
-        el("div", { class: "hint" }, "Fingerprint of the signed text (SHA-256):"), el("code", {}, signed.hash)));
+        el("div", { class: "hint" }, "Fingerprint of the signed text (SHA-256):"), el("code", {}, signed.hash),
+        el("a", { href: `/api/clients/${c.id}/contract/record`, target: "_blank", rel: "noopener", class: "small" }, "Open printable signed copy")));
     return card;
   }
   const edit = () => {
@@ -352,6 +353,9 @@ function setupView() {
   }));
   paintQ();
 
+  const pwCur = el("input", { type: "password", id: "pw-cur", autocomplete: "current-password" });
+  const pwNew = el("input", { type: "password", id: "pw-new", autocomplete: "new-password" });
+  const pwMsg = el("div", { class: "err", role: "status" });
   const section = (title, ...kids) => el("div", { class: "card stack", style: "margin-top:16px" }, el("h2", {}, title), ...kids);
   shell([
     el("div", { class: "head" }, el("h1", {}, "Setup"), el("button", { class: "btn", onclick: save }, "Save changes")),
@@ -380,6 +384,10 @@ function setupView() {
       el("div", {}, el("label", { for: "s-cur" }, "Default currency"), f.currency),
       el("div", {}, el("label", { for: "s-pay" }, "Default payment instructions"), f.payInstructions)),
     section("Notifications", el("label", { for: "s-notify", class: "switch" }, f.notify, "Email me when a client finishes, signs or messages me")),
+    section("Password",
+      el("div", {}, el("label", { for: "pw-cur" }, "Current password"), pwCur),
+      el("div", {}, el("label", { for: "pw-new" }, "New password (8+ characters)"), pwNew),
+      pwMsg, el("div", {}, el("button", { class: "btn ghost", type: "button", onclick: changePassword }, "Change password"))),
     section("Your data",
       el("p", { class: "hint", style: "margin:0" }, "Download everything we hold about your account and clients (uploaded files aren't included), or delete your account for good."),
       el("div", { class: "row" },
@@ -388,6 +396,13 @@ function setupView() {
     err,
   ]);
 
+  async function changePassword() {
+    pwMsg.className = "err"; pwMsg.textContent = "";
+    try {
+      await api("/api/account/password", { method: "POST", body: { current: pwCur.value, next: pwNew.value } });
+      pwCur.value = ""; pwNew.value = ""; pwMsg.className = "ok-text"; pwMsg.textContent = "Password changed. Other devices have been signed out.";
+    } catch (x) { pwMsg.textContent = x.message; }
+  }
   async function save() {
     err.textContent = "";
     try {

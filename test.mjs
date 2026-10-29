@@ -328,6 +328,25 @@ console.log("\nServerless path (web handler, fake S3, DynamoDB limiter)");
   assert.equal(r.status, 401); ok("login limit counts per CloudFront-reported address, stored in DynamoDB");
   assert.ok([...(await table.scan("W"))].length > 0); ok("limit counters are TTL'd rows in the table");
 
+  // change password + signed copy
+  r = await call("POST", "/api/account/password", { current: "nope", next: "brand new pass 1" });
+  assert.equal(r.status, 403);
+  const oldCookie = cookie;
+  r = await call("POST", "/api/account/password", { current: "correct horse 9", next: "brand new pass 1" });
+  assert.equal(r.status, 200);
+  const keep = cookie; cookie = oldCookie;
+  assert.equal((await call("GET", "/api/me")).status, 401); cookie = keep;
+  assert.equal((await call("GET", "/api/me")).status, 200); ok("changing the password signs out other sessions but keeps this one");
+  assert.equal((await call("POST", "/api/auth/login", { email: "sam@example.com", password: "brand new pass 1" }, ip("192.0.2.44"))).status, 200); ok("new password works for login");
+  assert.equal((await call("GET", `/api/clients/${c.id}/contract/record`)).status, 404); ok("no signed copy before signing");
+  await call("PUT", `/api/clients/${c.id}/contract`, { title: "Deal <b>", body: "I will do the work <script>alert(1)</script> for you." });
+  await call("POST", P + "/sign", { name: "Zed Zed", agree: true });
+  const copy = await handle(new Request(`https://clientword.example${P}/contract-copy`));
+  const html = await copy.text();
+  assert.equal(copy.status, 200); assert.match(html, /Zed Zed/); assert.match(html, /[0-9a-f]{64}/);
+  assert.ok(!html.includes("<script>") && !html.includes("<b>")); assert.match(copy.headers.get("content-security-policy"), /default-src 'none'/);
+  ok("printable signed copy shows the signature record and escapes the contract text");
+
   // writes are accepted from the configured APP_URL even when the Host header is the internal one
   r = await call("PUT", "/api/settings", { welcome: "Hi" }, { origin: "https://clientword.example", host: "internal.amplify.local" });
   assert.equal(r.status, 200);

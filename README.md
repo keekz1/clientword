@@ -7,7 +7,7 @@ emailed when a client finishes.
 
 ## Run locally (no AWS, no installs)
     node server.mjs        # http://localhost:3000 (Node 20+)
-    node test.mjs          # 148 checks: local store, DynamoDB logic on an in-memory table, and the serverless path
+    node test.mjs          # 152 checks: local store, DynamoDB logic on an in-memory table, and the serverless path
 
 Locally, data is a JSON file in `data/` and emails are printed to the console.
 
